@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+  trading_engine:
+    build: .
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOST=redis
+    volumes:
+      - .:/app
+    ports:
+      - "5000:5000"
+      - "8000:8000"
