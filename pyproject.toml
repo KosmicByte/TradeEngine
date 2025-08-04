@@ -1,13 +1,55 @@
 [tool.poetry]
 name = "tradeengine"
 version = "0.1.0"
-description = ""
-authors = ["Abhinav Mishra <mishraabhinav36@gmail.com>"]
+description = "A comprehensive trading engine with backend services and ML integrations."
+authors = [
+    "Abhinav Mishra <mishraabhinav36@gmail.com>",
+    "Aditya Mishra <mishraraghav36@gmail.com>"
+]
+license = "Proprietary"
 readme = "README.md"
+homepage = "https://github.com/YoungDevBot/TradeEngine"
+repository = "https://github.com/YoungDevBot/TradeEngine"
+keywords = ["trading", "finance", "machine-learning", "api", "automation"]
+packages = [{ include = "tradeengine" }]
 
 [tool.poetry.dependencies]
 python = "^3.13"
+fastapi = "^0.110.0"
+uvicorn = "^0.30.0"
+pydantic = "^2.7.0"
+requests = "^2.31.0"
+numpy = "^1.26.4"
+pandas = "^2.2.2"
+matplotlib = "^3.9.0"
+beautifulsoup4 = "^4.12.3"
+textblob = "^0.18.0"
+tweepy = "^4.14.0"
+upstox-python-sdk = "*"
+gym = "^0.26.2"
+stable-baselines3 = "^2.3.2"
+optuna = "^3.6.0"
+onnx = "^1.16.0"
+onnxruntime = "^1.17.0"
+shap = "^0.45.0"
+papermill = "^2.5.0"
+nbformat = "^5.10.0"
+reportlab = "^4.2.0"
+dvc = "^3.50.0"
+python-multipart = "^0.0.9"
+python-dotenv = "^1.0.1"
 
+[tool.poetry.dev-dependencies]
+pytest = "^8.2"
+black = "^24.3"
+flake8 = "^7.0"
+mypy = "^1.10"
+isort = "^5.13"
+pre-commit = "^3.6"
+jupyter = "^1.0.0"
+notebook = "^7.2.0"
+streamlit = "^1.35.0"
+locust = "^2.24.0"
 
 [build-system]
 requires = ["poetry-core"]
