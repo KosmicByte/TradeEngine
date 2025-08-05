@@ -1,10 +1,9 @@
 
 import torch
-import pandas as pd
-from feature_engineering import add_features
-from lstm_transformer_model import LSTMTransformerModel
+from src.tradesystem.feature_engineering.feature_engineering import add_features
+from src.tradesystem.models.lstm_transformer_model import LSTMTransformerModel
 from sklearn.preprocessing import MinMaxScaler
-import numpy as np
+
 
 def prepare_input_sequence(df, seq_len=50):
     df = add_features(df)

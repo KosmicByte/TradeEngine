@@ -1,7 +1,7 @@
 
-from nse_option_chain_fetcher import fetch_nse_option_chain
+from src.tradesystem.data_fetchers.nse_option_chain_fetcher import fetch_nse_option_chain
 from option_flow_analyzer import analyze_option_flow
-import pandas as pd
+
 
 def display_option_flow():
     df = fetch_nse_option_chain()

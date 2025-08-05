@@ -3,15 +3,15 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from lstm_transformer_model import LSTMTransformerModel
-from trade_dataset import TradeDataset
+from src.tradesystem.feature_engineering.trade_dataset import TradeDataset
 import pandas as pd
-from feature_engineering import add_features
+from src.tradesystem.feature_engineering.feature_engineering import add_features
 
 # Load and preprocess data
 df = pd.read_csv("nifty_data_sample.csv")
 df = add_features(df)
 df = df.iloc[:-10]
-from trade_dataset import label_trades
+from src.tradesystem.feature_engineering.trade_dataset import label_trades
 df["label"] = label_trades(df)
 
 # Define dataset and dataloader

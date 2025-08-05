@@ -1,8 +1,8 @@
 
-from predict_signal_realtime import predict_trade_signal
-from nse_option_chain_fetcher import fetch_nse_option_chain
-from option_flow_analyzer import analyze_option_flow
-import pandas as pd
+from src.tradesystem.signal_engine.predict_signal_realtime import predict_trade_signal
+from src.tradesystem.data_fetchers.nse_option_chain_fetcher import fetch_nse_option_chain
+from src.tradesystem.filters.option_flow_analyzer import analyze_option_flow
+
 
 def generate_final_trade_signal(df_ohlcv):
     # AI Prediction

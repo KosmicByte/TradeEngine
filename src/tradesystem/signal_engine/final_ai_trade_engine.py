@@ -1,9 +1,9 @@
 
 from predict_signal_realtime import predict_trade_signal
-from nse_option_chain_fetcher import fetch_nse_option_chain
+from src.tradesystem.data_fetchers.nse_option_chain_fetcher import fetch_nse_option_chain
 from option_flow_analyzer import analyze_option_flow
 from market_condition_filter import evaluate_market_condition
-import pandas as pd
+
 
 def full_trade_decision(df_ohlcv):
     try:

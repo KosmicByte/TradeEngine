@@ -1,8 +1,8 @@
 
-from vix_volatility_filter import fetch_nifty_vix, atr_trend_filter
-from news_sentiment_fetcher import fetch_market_sentiment
-from fii_dii_fetcher import fetch_fii_dii_activity
-import pandas as pd
+from src.tradesystem.data_fetchers.vix_volatility_filter import fetch_nifty_vix, atr_trend_filter
+from src.tradesystem.data_fetchers.news_sentiment_fetcher import fetch_market_sentiment
+from src.tradesystem.data_fetchers.fii_dii_fetcher import fetch_fii_dii_activity
+
 
 def evaluate_market_condition(df_ohlcv):
     try:
