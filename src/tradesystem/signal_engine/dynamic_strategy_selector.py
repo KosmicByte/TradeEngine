@@ -1,8 +1,9 @@
 
+#TODO: Refactor to use new AI trade engine and strategy modules
 from multi_asset_option_chain import fetch_option_chain
 from option_strategy_recommender import suggest_option_strategies
 from option_risk_planner import calculate_option_risk
-from market_condition_filter import evaluate_market_condition
+from src.tradesystem.filters.market_condition_filter import evaluate_market_condition
 from final_ai_trade_engine import full_trade_decision
 
 def dynamic_strategy_selector(df_ohlcv, symbol="NIFTY", index=True, lot_size=50):
