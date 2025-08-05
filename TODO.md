@@ -1,15 +1,15 @@
  
-[] test basic scripts
+[x] test basic scripts
 [] run on demo data 
 [] run on real data
 [] add more tests
 [] add more documentation
 [] add more examples
 [] add more features
-[] refactor code
+[x] refactor code
 [] improve performance
 [] fix bugs
-[] update dependencies
+[x] update dependencies
 [] update documentation
 [] update examples
 [] update tests
