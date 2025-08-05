@@ -1,76 +1,76 @@
-
-import time
-import numpy as np
-from upstox_api.api import Upstox, TransactionType, OrderType, ProductType, DurationType
+from upstox_client import UpstoxClient
+from upstox_client.api import InstrumentApi, OrderApi
+from upstox_client.models import (
+    PlaceOrderRequest,
+    TransactionType,
+    OrderType,
+    ProductType,
+    DurationType
+)
+from upstox_client.rest import ApiException
 
 class ExecutionManager:
-    def __init__(self, api_key, access_token, secret, capital):
+    def __init__(self, access_token, capital):
         """
-        api_key, access_token, secret: Upstox credentials
+        access_token: Upstox access token (OAuth)
         capital: total trading capital (INR)
         """
         self.capital = capital
-        self.u = Upstox(api_key, access_token)
-        # Load contracts
-        self.u.get_master_contract('NSE_FO')
-        self.u.get_master_contract('NSE_EQ')
-        self.u.get_master_contract('NSE_INDEX')
+
+        # Setup client
+        configuration = UpstoxClient.Configuration()
+        configuration.access_token = access_token
+        self.api_client = UpstoxClient(configuration)
+
+        self.order_api = OrderApi(self.api_client)
+        self.instrument_api = InstrumentApi(self.api_client)
 
     def calculate_kelly_lot(self, win_rate, rr_ratio, risk_per_trade=0.01, price_per_point=1):
-        """
-        Calculate lot size using Kelly Criterion.
-        win_rate: expected win probability (0-1)
-        rr_ratio: reward:risk ratio (e.g., 2 for 1:2)
-        risk_per_trade: fraction of capital to risk per trade
-        price_per_point: value of one point per lot
-        """
         b = rr_ratio
         p = win_rate
         q = 1 - p
         k = (b * p - q) / b
-        k = max(min(k, 1), 0)  # bound between 0 and 1
-        # risk amount = capital * risk_per_trade
+        k = max(min(k, 1), 0)
         risk_amount = self.capital * risk_per_trade
-        # points_at_risk = risk_amount / price_per_point
-        # lot size = k * capital / (points_at_risk * lot_size_multiplier)
-        # Upstox lot size is fixed for index (25 for NIFTY) or can be calculated for stocks.
-        # Simplest: lot_qty = floor(k * (capital / (price_per_point * b)))
         lot_qty = max(int((k * self.capital) / (price_per_point * b)), 1)
         return lot_qty
 
-    def place_option_order(self, symbol, strike, option_type, expiry, qty, stop_loss=None, target=None):
+    def get_instrument_token(self, exchange, symbol):
         """
-        Place a market order with Upstox for CE/PE options.
-        option_type: 'CE' or 'PE'
-        expiry: in format 'DDMMMYY' e.g., '06JUN25'
-        qty: number of lots
-        stop_loss/target: triggers for SL/TP orders (not fully supported by Upstox API)
+        Use Instrument API to fetch token for a given symbol.
         """
-        # Construct instrument symbol, e.g., 'NIFTY06JUN2517500CE'
-        inst_symbol = f"{symbol}{expiry}{strike}{option_type}"
+        instruments = self.instrument_api.get_instruments(exchange_segment=exchange)
+        for ins in instruments:
+            if ins.tradingsymbol == symbol:
+                return ins.instrument_token
+        raise ValueError(f"Symbol {symbol} not found in {exchange}")
+
+    def place_option_order(self, symbol, strike, option_type, expiry, qty):
+        """
+        Place market order for options.
+        """
+        inst_symbol = f"{symbol}{expiry}{strike}{option_type}"  # e.g., NIFTY06JUN2517500CE
+
         try:
-            contract = self.u.get_instrument_by_symbol('NSE_FO', inst_symbol)
-            order = self.u.place_order(
-                TransactionType.Buy if option_type == 'CE' else TransactionType.Sell,
-                contract,
-                qty,
-                OrderType.Market,
-                ProductType.Intraday,
-                DurationType.DAY,
-                price=0,
-                trigger_price=None
+            token = self.get_instrument_token('NSE_FO', inst_symbol)
+
+            order_req = PlaceOrderRequest(
+                transaction_type=TransactionType.BUY if option_type == 'CE' else TransactionType.SELL,
+                instrument_token=token,
+                quantity=qty,
+                order_type=OrderType.MARKET,
+                product=ProductType.INTRADAY,
+                duration=DurationType.DAY
             )
-            return order
+            result = self.order_api.place_order(order_req)
+            return result
+        except ApiException as e:
+            print("API error:", e)
         except Exception as e:
             print("Order placement failed:", e)
-            return None
+        return None
 
     def execute_trade(self, symbol, strike, option_type, expiry, win_rate, rr_ratio, risk_per_trade=0.01):
-        """
-        High-level method:
-        - Calculate lot size via Kelly
-        - Place market order
-        """
         qty = self.calculate_kelly_lot(win_rate, rr_ratio, risk_per_trade)
         print(f"Calculated lot size: {qty}")
         order = self.place_option_order(symbol, strike, option_type, expiry, qty)
@@ -78,7 +78,6 @@ class ExecutionManager:
             print("Order placed:", order)
         return order
 
-# Example usage:
-# from execution_connector import ExecutionManager
-# em = ExecutionManager(API_KEY, ACCESS_TOKEN, API_SECRET, capital=100000)
+# Usage:
+# em = ExecutionManager(ACCESS_TOKEN, capital=100000)
 # em.execute_trade("NIFTY", 17500, "CE", "06JUN25", win_rate=0.6, rr_ratio=2.0)
