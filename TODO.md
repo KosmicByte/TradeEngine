@@ -29,4 +29,4 @@
 [] update code internationalization
 [] update code localization
 [] update code testing
-[] update code debugging
+[x] update code debugging
