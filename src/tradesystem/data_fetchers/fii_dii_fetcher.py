@@ -4,6 +4,12 @@ import pandas as pd
 from io import StringIO
 
 def fetch_fii_dii_activity():
+    """
+    Fetches the latest FII and DII trading activity from NSE India and summarizes the net activity.
+    Returns: 
+        str: A summary of the net FII and DII activity ("Strong Buying", "
+                "Strong Selling", or "Mixed").
+    """
     url = "https://www.nseindia.com/api/fiidiiTradeStatistics?category=all"
     headers = {
         "User-Agent": "Mozilla/5.0",
