@@ -11,30 +11,25 @@ def fetch_fii_dii_activity():
         "Referer": "https://www.nseindia.com/"
     }
 
-    try:
-        with requests.Session() as session:
-            session.headers.update(headers)
-            _ = session.get("https://www.nseindia.com")
-            r = session.get(url)
+    with requests.Session() as session:
+        session.headers.update(headers)
+        _ = session.get("https://www.nseindia.com")
+        r = session.get(url)
 
-        data = r.json()
-        summary = data.get("data", [])
+    data = r.json()
+    summary = data.get("data", [])
 
-        net_fii = 0
-        net_dii = 0
-        for item in summary:
-            if item["category"] == "FII":
-                net_fii = float(item["netValue"].replace(",", ""))
-            elif item["category"] == "DII":
-                net_dii = float(item["netValue"].replace(",", ""))
+    net_fii = 0
+    net_dii = 0
+    for item in summary:
+        if item["category"] == "FII":
+            net_fii = float(item["netValue"].replace(",", ""))
+        elif item["category"] == "DII":
+            net_dii = float(item["netValue"].replace(",", ""))
 
-        if net_fii > 0 and net_dii > 0:
-            return "Strong Buying"
-        elif net_fii < 0 and net_dii < 0:
-            return "Strong Selling"
-        else:
-            return "Mixed"
-
-    except Exception as e:
-        print("FII/DII fetch failed:", e)
-        return "Unknown"
+    if net_fii > 0 and net_dii > 0:
+        return "Strong Buying"
+    elif net_fii < 0 and net_dii < 0:
+        return "Strong Selling"
+    else:
+        return "Mixed"
