@@ -1,6 +1,28 @@
-.venv
+# Virtual environments
+.venv/
+
+# Lock files (Poetry / uv)
+poetry.lock
+uv.lock
+
+# Python cache/compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Build artifacts
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Runtime / generated dirs
 results/
 data/
-*.pyc
-__pycache__/
 
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# OS junk
+.DS_Store
+Thumbs.db
