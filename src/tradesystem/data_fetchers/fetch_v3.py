@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
 """
-NSE Daily Snapshot — resilient, warmed-up, and self-healing
-
 Pulls FII/DII flows, India VIX, NIFTY spot, and nearest-expiry option chain.
 Computes near-ATM PCR (±3%) and a simple market regime label. Saves outputs to
 CSV/JSON and prints a concise console summary.
-
-Key traits:
-- Cookie warm-up (prevents 401/403 and empty payloads)
-- Tolerant 'INDIA VIX' row match (NBSP/extra spaces, case, variants)
-- Nearest-expiry OC with fallbacks (max-rows expiry → all rows)
-- TCP/HTTP-level retries (urllib3 Retry) + jitter + manual limited retries
-- Targeted re-fetch (“healing”) for missing OC/Spot/VIX
-- Global wall-clock timeout; deterministic finish
-- Always writes all four outputs
 
 Outputs:
     fii_dii.csv
@@ -29,6 +18,7 @@ import math
 import time
 import datetime as dt
 from typing import Any, Dict, List, Optional
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -39,6 +29,14 @@ from urllib3.util.retry import Retry
 # -----------------------------
 # Config & constants
 # -----------------------------
+
+# Where to save outputs: <repo-root>/results
+REPO_ROOT = Path(__file__).resolve().parents[3]   # …/repo/src/tradesystem/data_fetchers -> parents[3] = repo root
+RESULTS_DIR = REPO_ROOT / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+DATE_DIR = RESULTS_DIR / dt.date.today().isoformat()
+DATE_DIR.mkdir(parents=True, exist_ok=True)
+
 NSE_BASE = "https://www.nseindia.com"
 
 NSE_HEADERS = {
@@ -499,10 +497,10 @@ def main() -> None:
     regime     = snapshot["regime"]
 
     # Save outputs (always write all four)
-    fii_dii_csv = "fii_dii.csv"
-    oc_csv = "nifty_option_chain_nearest_expiry.csv"
-    snapshot_json = "snapshot.json"
-    snapshot_txt = "snapshot.txt"
+    fii_dii_csv = str(DATE_DIR / "fii_dii.csv")
+    oc_csv = str(DATE_DIR / "nifty_option_chain_nearest_expiry.csv")
+    snapshot_json = str(DATE_DIR / "snapshot.json")
+    snapshot_txt = str(DATE_DIR / "snapshot.txt")
 
     fii_dii_df.to_csv(fii_dii_csv, index=False)
     oc_df.to_csv(oc_csv, index=False)
