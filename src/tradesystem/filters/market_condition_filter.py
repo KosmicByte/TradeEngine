@@ -1,7 +1,7 @@
 
 from src.tradesystem.data_fetchers.vix_volatility_filter import fetch_nifty_vix, atr_trend_filter
 from src.tradesystem.data_fetchers.news_sentiment_fetcher import fetch_market_sentiment
-from src.tradesystem.data_fetchers.fii_dii_fetcher import fetch_fii_dii_activity
+from src.tradesystem.data_fetchers.fetch import fetch_fii_dii_activity
 
 
 def evaluate_market_condition(df_ohlcv):
