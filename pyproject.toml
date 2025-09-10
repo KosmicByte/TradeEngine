@@ -38,6 +38,7 @@ dependencies = [
   "curl-cffi>=0.13.0",
   "bs4>=0.0.2",
   "nsepython>=2.97",
+  "snakeviz>=2.2.2",
 ]
 
 [project.optional-dependencies]
