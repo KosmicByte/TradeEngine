@@ -7,8 +7,6 @@ NSE data fetchers using `nsepython` only.
 """
 
 from __future__ import annotations
-
-import math
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 

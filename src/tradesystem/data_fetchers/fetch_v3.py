@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Pulls FII/DII flows, India VIX, NIFTY spot, and nearest-expiry option chain.
 Computes near-ATM PCR (±3%) and a simple market regime label. Saves outputs to
@@ -9,6 +8,9 @@ Outputs:
     nifty_option_chain_nearest_expiry.csv
     snapshot.json
     snapshot.txt
+
+Author: Abhinav Mishra
+
 """
 
 from __future__ import annotations

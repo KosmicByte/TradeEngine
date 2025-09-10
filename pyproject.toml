@@ -33,10 +33,6 @@ dependencies = [
   "python-multipart==0.0.9",
   "python-dotenv==1.1.1",
   "ta>=0.11,<0.12",
-  "httpx>=0.28.1",
-  "playwright>=1.55.0",
-  "curl-cffi>=0.13.0",
-  "bs4>=0.0.2",
   "nsepython>=2.97",
   "snakeviz>=2.2.2",
 ]
