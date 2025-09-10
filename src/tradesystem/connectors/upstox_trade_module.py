@@ -2,7 +2,7 @@
 # Upstox Live Trading Integration (sample)
 # Make sure to install: pip install upstox-python
 
-from upstox_api.api import *
+from upstox_client.api import *
 import datetime
 import pandas as pd
 
