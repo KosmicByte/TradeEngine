@@ -35,6 +35,7 @@ dependencies = [
   "ta>=0.11,<0.12",
   "nsepython>=2.97",
   "snakeviz>=2.2.2",
+  "snakemake>=7.32.4",
 ]
 
 [project.optional-dependencies]
