@@ -1,4 +1,5 @@
 .venv/
+.snakemake/
 *.lock
 results/
 data/

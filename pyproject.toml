@@ -3,7 +3,7 @@ name = "tradeengine"
 version = "0.1.0"
 description = "A comprehensive trading engine with backend services and ML integrations."
 readme = "README.md"
-requires-python = ">=3.10,<3.12"   # tighten to avoid 3.12-only markers
+requires-python = "==3.11.*"
 authors = [
   { name = "Abhinav Mishra", email = "mishraabhinav36@gmail.com" },
   { name = "Aditya Mishra", email = "mishraraghav36@gmail.com" }
