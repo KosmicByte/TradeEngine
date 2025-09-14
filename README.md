@@ -8,14 +8,15 @@
 ```bash
 git checkout devel
 ```
-1. Each tie after opening the project in pycharm, update the project from UI (or git pull) to get the latest changes. 
+1. Each time after opening the project in pycharm, update the project from UI (or git pull) to get the latest changes. 
 2. Open in-built terminal in pycharm and run the following command to snc the package dependencies:
 
 NOTE: Do this once as I have changed the python version to 3.11.x:
 ```bash 
 uv sync --python 3.11
 ```
-
+ 
+Generally, you can just run:
 ```bash
 uv sync
 ``` 
