@@ -15,7 +15,7 @@ NOTE: Do this once as I have changed the python version to 3.11.x:
 ```bash 
 uv sync --python 3.11
 ```
- 
+
 Generally, you can just run:
 ```bash
 uv sync
