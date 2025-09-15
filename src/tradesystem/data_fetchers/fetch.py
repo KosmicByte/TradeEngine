@@ -1,380 +1,510 @@
 """
-NSE data fetchers using `nsepython` only.
-- FII/DII flows
-- Market sentiment (breadth + PCR + VIX Δ% + NIFTY return)
-- Option chain (nearest expiry, tidy columns)
-- India VIX (with previous close safety)
+Pulls FII/DII flows, India VIX, NIFTY spot, and nearest-expiry option chain.
+Computes near-ATM PCR (±3%) and a simple market regime label. Saves outputs to
+CSV/JSON and prints a concise console summary.
+
+Outputs:
+    fii_dii.csv
+    nifty_option_chain_nearest_expiry.csv
+    snapshot.json
+    snapshot.txt
+    raw_option_chain_response.json (for debugging)
+
+Author: Abhinav Mishra
 """
 
 from __future__ import annotations
+
+import json
+import math
 import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import datetime as dt
+from typing import Any, Dict, List, Optional
+from pathlib import Path
 
 import pandas as pd
-from nsepython import nse_fiidii, nse_optionchain_scrapper, nsefetch
+import requests
+import sys, signal, random
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import pytz  # <<< MODIFIED: Added for timezone-aware time checking
 
+# -----------------------------
+# Config & constants
+# -----------------------------
 
-# ------------------------------- Retry Wrapper -------------------------------
+# --- Path Configuration ---
+# Set this number to how many folders "up" from the script is your project root.
+LEVELS_UP_TO_PROJECT_ROOT = 3
 
-def _retry(fn, *args, retries: int = 3, delay: float = 0.5, **kwargs):
-    """
-    Execute `fn` with simple exponential backoff. Raises last exception on failure.
-    """
-    backoff = delay
-    for i in range(retries):
+PROJECT_ROOT = Path(__file__).resolve().parents[LEVELS_UP_TO_PROJECT_ROOT]
+RESULTS_DIR = PROJECT_ROOT / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Create a unique directory for this specific run using a timestamp
+DATE_DIR = RESULTS_DIR / dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+DATE_DIR.mkdir(parents=True, exist_ok=True)
+
+NSE_BASE = "https://www.nseindia.com"
+
+# Replace NSE_HEADERS with:
+NSE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" # <<< MODIFIED: More common User-Agent
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Referer": "https://www.nseindia.com/option-chain",
+    "Connection": "keep-alive",
+    "DNT": "1",
+    "Pragma": "no-cache",
+    "Cache-Control": "no-cache",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+}
+
+# Snappy networking defaults
+TIMEOUT = 8
+MAX_RETRIES = 3
+RETRY_BACKOFF = 1.5
+
+# TCP/HTTP-level retry config
+HTTP_TOTAL_RETRIES = 4
+HTTP_CONNECT_RETRIES = 3
+HTTP_READ_RETRIES = 3
+HTTP_BACKOFF_FACTOR = 0.6
+STATUS_FORCELIST = [401, 403, 408, 425, 429, 500, 502, 503, 504]
+
+# Hard cap for entire run
+RUN_TIMEOUT_SECS = 60
+
+# Endpoints
+URL_ALL_INDICES = NSE_BASE + "/api/allIndices"
+URL_FIIDII = NSE_BASE + "/api/fiidiiTradeReact"
+URL_OPTION_CHAIN = NSE_BASE + "/api/option-chain-indices?symbol={symbol}"
+
+# -----------------------------
+# <<< MODIFIED: New function to check NSE market hours
+# -----------------------------
+def is_nse_market_open() -> bool:
+    """Checks if the current time is within NSE trading hours (9:15 AM - 3:30 PM IST)."""
+    try:
+        ist = pytz.timezone('Asia/Kolkata')
+        now_ist = dt.datetime.now(ist)
+
+        # Check if it's a weekday (Monday=0, Sunday=6)
+        if now_ist.weekday() > 4:
+            return False
+
+        market_open = dt.time(9, 15)
+        market_close = dt.time(15, 30)
+
+        return market_open <= now_ist.time() <= market_close
+    except Exception as e:
+        print(f"[WARN] Could not determine market hours: {e}")
+        return True # Default to true to allow running anyway
+
+# -----------------------------
+# Global timeout handler
+# -----------------------------
+def _alarm_handler(signum, frame):
+    raise TimeoutError("Global run timeout exceeded")
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def _to_float(x: Any) -> float:
+    if x is None: return 0.0
+    try:
+        if isinstance(x, str) and x.strip() == "": return 0.0
+        v = float(x)
+        return 0.0 if math.isnan(v) else v
+    except Exception: return 0.0
+
+def _normalize_date(s: Any) -> str:
+    if s is None: return ""
+    if isinstance(s, dt.date): return s.isoformat()
+    if isinstance(s, (int, float)):
+        try: return dt.date.fromtimestamp(float(s)).isoformat()
+        except Exception: return str(s)
+    st = str(s).strip()
+    for fmt in ("%d-%b-%Y", "%d %b %Y", "%Y-%m-%d", "%d-%B-%Y", "%d %B %Y"):
+        try: return dt.datetime.strptime(st, fmt).date().isoformat()
+        except Exception: continue
+    return st
+
+def _norm_name(s: Any) -> str:
+    t = str(s or "").replace("\xa0", " ")
+    return " ".join(t.split()).strip().upper()
+
+def _jitter_sleep(base=0.25, spread=0.4):
+    time.sleep(base + random.random() * spread)
+
+# -----------------------------
+# HTTP session & raw GET with manual retry
+# -----------------------------
+def _build_session() -> requests.Session:
+    sess = requests.Session()
+    sess.headers.update(NSE_HEADERS)
+    retry = Retry(
+        total=HTTP_TOTAL_RETRIES, connect=HTTP_CONNECT_RETRIES, read=HTTP_READ_RETRIES,
+        backoff_factor=HTTP_BACKOFF_FACTOR, status_forcelist=STATUS_FORCELIST,
+        allowed_methods=frozenset(["GET"]), raise_on_status=False, respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    sess.mount("https://", adapter)
+    sess.mount("http://", adapter)
+    return sess
+
+def _looks_blocked(text: str) -> bool:
+    t = (text or "").lower()
+    return ("are you a human" in t) or ("access denied" in t) or ("captcha" in t)
+
+def _retry_get(url: str, session: Optional[requests.Session] = None) -> Dict[str, Any]:
+    sess = session or _build_session()
+    for i in range(MAX_RETRIES):
         try:
-            return fn(*args, **kwargs)
-        except Exception:
-            if i == retries - 1:
-                raise
-            time.sleep(backoff)
-            backoff *= 2
+            r = sess.get(url, headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
 
+            # <<< MODIFIED: Added detailed logging for diagnostics >>>
+            print(f"DEBUG: GET {url} | Status: {r.status_code} | Attempt: {i+1}/{MAX_RETRIES}")
+            if r.status_code != 200:
+                # Log the beginning of the response to see if it's an HTML block page
+                print(f"DEBUG: Response Text (first 200 chars): {r.text[:200].strip()}")
+            # <<< END MODIFICATION >>>
 
-# ----------------------------- Core NSE Utilities ----------------------------
+            if r.status_code == 200:
+                if _looks_blocked(r.text):
+                    print("WARN: NSE block page detected, re-warming session...")
+                    nse_warmup(sess)
+                    time.sleep(RETRY_BACKOFF ** i)
+                    continue
+                try:
+                    js = r.json()
+                    return js if isinstance(js, dict) else {"data": js}
+                except Exception as e:
+                    print(f"WARN: JSON parsing failed on attempt {i+1}. Error: {e}")
+                    pass
 
-def _fetch_all_indices() -> List[Dict[str, Any]]:
-    """
-    Pulls the 'allIndices' feed and returns a list of index rows.
-    Handles payload variants: { "data": [...] } or [...].
+            if r.status_code in STATUS_FORCELIST:
+                print(f"WARN: Retrying due to status {r.status_code}...")
+                nse_warmup(sess)
+                time.sleep(RETRY_BACKOFF ** i)
+                continue
 
-    Row keys commonly observed (not guaranteed):
-      - index / indexName (str)
-      - last / lastPrice / lastValue / value / ltp (float)
-      - previousClose / prevClose (float)
-      - variation / percentChange (floats)
-      - advances / declines (ints) [not always available]
-    """
-    data = _retry(nsefetch, "https://www.nseindia.com/api/allIndices")
-    items = data.get("data", data)
-    if not isinstance(items, list):
-        raise ValueError("Unexpected allIndices payload shape")
-    return items
+            break
+        except requests.exceptions.RequestException as e:
+            print(f"WARN: Request failed on attempt {i+1}. Error: {e}")
+            time.sleep(RETRY_BACKOFF ** i)
+            continue
+    print(f"ERROR: Failed to fetch {url} after {MAX_RETRIES} attempts.")
+    return {}
 
+# -----------------------------
+# Warm-up (cookie priming)
+# -----------------------------
+def nse_warmup(session: requests.Session) -> None:
+    print("INFO: Warming up NSE session to get cookies...")
+    try:
+        session.get(NSE_BASE + "/", headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
+        _jitter_sleep(0.3, 0.4)
+        session.get(NSE_BASE + "/market-data", headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
+        _jitter_sleep(0.3, 0.4)
+        session.get(NSE_BASE + "/option-chain", headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
+        _jitter_sleep(0.3, 0.4)
+        session.get(URL_ALL_INDICES, headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
+        print("INFO: Session warmed up.")
+    except Exception as e:
+        print(f"WARN: Error during session warm-up: {e}")
+        pass
 
-def _norm_index_name(row: Dict[str, Any]) -> str:
-    return (row.get("index") or row.get("indexName") or "").strip().upper()
+# -----------------------------
+# Expiry handling
+# -----------------------------
+def _nearest_expiry(expiry_dates: List[str]) -> Optional[str]:
+    if not expiry_dates: return None
+    today = dt.date.today()
+    def _parse(d: str) -> Optional[dt.date]:
+        for fmt in ("%d-%b-%Y", "%d %b %Y", "%d-%B-%Y", "%d %B %Y", "%Y-%m-%d"):
+            try: return dt.datetime.strptime(d.strip(), fmt).date()
+            except Exception: continue
+        return None
+    parsed = sorted([t for t in ((_parse(raw), raw) for raw in expiry_dates) if t[0] is not None])
+    if not parsed: return None
+    for d, raw in parsed:
+        if d >= today: return raw
+    return parsed[-1][1]
 
+# -----------------------------
+# Fetchers
+# -----------------------------
+def fetch_all_indices(session: Optional[requests.Session] = None) -> Dict[str, Any]:
+    return _retry_get(URL_ALL_INDICES, session)
 
-def _get_float(row: Dict[str, Any], keys: Iterable[str], default: Optional[float] = None) -> Optional[float]:
-    for k in keys:
-        if k in row and row[k] not in (None, ""):
-            try:
-                return float(row[k])
-            except Exception:
-                pass
-    return default
+def fetch_fiidii(session: Optional[requests.Session] = None) -> pd.DataFrame:
+    js = _retry_get(URL_FIIDII, session)
+    data = js.get("data") or js.get("records") or js.get("fiiDii") or []
+    if not data: return pd.DataFrame(columns=["category", "date", "buyValue", "sellValue", "netValue"])
+    df = pd.DataFrame.from_records(data)
+    rename = {
+        "category": "category", "Category": "category", "date": "date", "Date": "date", "tradeDate": "date",
+        "buyValue": "buyValue", "BuyValue": "buyValue", "buy": "buyValue", "sellValue": "sellValue",
+        "SellValue": "sellValue", "sell": "sellValue", "netValue": "netValue", "NetValue": "netValue", "net": "netValue",
+    }
+    df = df.rename(columns=lambda c: rename.get(c, c))
+    for c in ("buyValue", "sellValue", "netValue"):
+        if c in df.columns: df[c] = df[c].map(_to_float)
+    if "date" in df.columns: df["date"] = df["date"].map(_normalize_date)
+    keep = [c for c in ["category", "date", "buyValue", "sellValue", "netValue"] if c in df.columns]
+    return df[keep]
 
-
-def _get_index_row(name: str, rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """
-    Returns the first matching index row (case-insensitive, tolerant to spacing).
-    """
-    name_u = name.strip().upper()
-    for r in rows:
-        if _norm_index_name(r) == name_u:
-            return r
+def fetch_index_row(indices_json: Dict[str, Any], want_name: str) -> Optional[Dict[str, Any]]:
+    want = _norm_name(want_name)
+    for row in (indices_json.get("data", []) or []):
+        if want in _norm_name(row.get("index", "")): return row
     return None
 
+def fetch_india_vix(session: Optional[requests.Session] = None) -> float:
+    idx = fetch_all_indices(session)
+    row = fetch_index_row(idx, "INDIA VIX")
+    if row:
+        for key in ("last", "ltp", "lastPrice"):
+            v = _to_float(row.get(key))
+            if v > 0: return v
+    oc = _retry_get(URL_OPTION_CHAIN.format(symbol="INDIAVIX"), session)
+    uv = ((oc or {}).get("records", {}) or {}).get("underlyingValue")
+    return float(uv) if uv is not None else float("nan")
 
-# ------------------------------- Public Fetchers -----------------------------
+def fetch_nifty_spot(session: Optional[requests.Session] = None) -> Optional[float]:
+    oc = _retry_get(URL_OPTION_CHAIN.format(symbol="NIFTY"), session)
+    uv = ((oc or {}).get("records", {}) or {}).get("underlyingValue")
+    if uv is not None:
+        v = _to_float(uv)
+        if v > 0: return v
+    idx = fetch_all_indices(session)
+    row = fetch_index_row(idx, "NIFTY 50")
+    if row:
+        for key in ("last", "ltp", "lastPrice"):
+            v = _to_float(row.get(key))
+            if v > 0: return v
+    return None
 
-def fetch_fii_dii() -> pd.DataFrame:
-    """
-    Returns latest FII/DII activity as a DataFrame with columns:
-    [category, date, buyValue, sellValue, netValue]
-    """
-    df = _retry(nse_fiidii)
-    return pd.DataFrame(df)[["category", "date", "buyValue", "sellValue", "netValue"]]
+def fetch_nifty_option_chain_nearest_expiry(session: Optional[requests.Session] = None) -> pd.DataFrame:
+    oc = _retry_get(URL_OPTION_CHAIN.format(symbol="NIFTY"), session)
 
+    # <<< MODIFIED: Save raw JSON response for debugging purposes >>>
+    raw_json_path = DATE_DIR / "raw_option_chain_response.json"
+    try:
+        with open(raw_json_path, "w", encoding="utf-8") as f:
+            json.dump(oc, f, indent=2, ensure_ascii=False)
+        print(f"INFO: Raw option chain JSON saved to {raw_json_path}")
+    except Exception as e:
+        print(f"WARN: Could not save raw option chain JSON: {e}")
+    # <<< END MODIFICATION >>>
 
-def fetch_nifty_vix() -> float:
-    """
-    Returns latest India VIX value from allIndices. Falls back sanely across key variants.
-    """
-    rows = _fetch_all_indices()
-    vix = _get_index_row("INDIA VIX", rows) or _get_index_row("INDIAVIX", rows)
-    if not vix:
-        raise KeyError("India VIX not present in allIndices payload")
+    rec = (oc or {}).get("records", {}) or {}
+    rows = rec.get("data", []) or []
+    expiries = [str(x) for x in (rec.get("expiryDates", []) or [])]
 
-    last = _get_float(vix, ("last", "lastPrice", "lastValue", "value", "ltp"))
-    if last is None:
-        raise KeyError("India VIX found but no usable price field")
-    return float(last)
+    def _aggregate(_rows: List[dict]) -> pd.DataFrame:
+        agg: Dict[float, Dict[str, float]] = {}
+        for r in _rows:
+            k = _to_float(r.get("strikePrice"))
+            if k <= 0: continue
+            ce, pe = r.get("CE", {}), r.get("PE", {})
+            e = agg.setdefault(k, {"strike": k, "ce_oi": 0.0, "ce_chg_oi": 0.0, "ce_vol": 0.0, "ce_iv": 0.0,
+                                   "pe_oi": 0.0, "pe_chg_oi": 0.0, "pe_vol": 0.0, "pe_iv": 0.0,})
+            if ce:
+                e["ce_oi"] += _to_float(ce.get("openInterest"))
+                e["ce_chg_oi"] += _to_float(ce.get("changeinOpenInterest"))
+                e["ce_vol"] += _to_float(ce.get("totalTradedVolume"))
+                if _to_float(ce.get("impliedVolatility")) > 0: e["ce_iv"] = _to_float(ce.get("impliedVolatility"))
+            if pe:
+                e["pe_oi"] += _to_float(pe.get("openInterest"))
+                e["pe_chg_oi"] += _to_float(pe.get("changeinOpenInterest"))
+                e["pe_vol"] += _to_float(pe.get("totalTradedVolume"))
+                if _to_float(pe.get("impliedVolatility")) > 0: e["pe_iv"] = _to_float(pe.get("impliedVolatility"))
+        cols = ["strike","ce_oi","ce_chg_oi","ce_vol","ce_iv","pe_oi","pe_chg_oi","pe_vol","pe_iv"]
+        return pd.DataFrame(list(agg.values()), columns=cols).sort_values("strike").reset_index(drop=True) if agg else pd.DataFrame(columns=cols)
 
+    nearest = _nearest_expiry(expiries) if expiries else None
+    filt = [r for r in rows if str(r.get("expiryDate","")).strip() == nearest] if nearest else []
+    df = _aggregate(filt)
+    if not df.empty: return df
 
-def _fetch_vix_change_pct() -> float:
-    """
-    Returns % change for India VIX if previous close is available; else 0.0.
-    """
-    rows = _fetch_all_indices()
-    vix = _get_index_row("INDIA VIX", rows) or _get_index_row("INDIAVIX", rows)
-    if not vix:
-        return 0.0
+    if rows:
+        buckets = {}
+        for r in rows: buckets.setdefault(str(r.get("expiryDate","")).strip(), []).append(r)
+        if buckets:
+            best_expiry = max(buckets.items(), key=lambda kv: len(kv[1]))[0]
+            df = _aggregate(buckets[best_expiry])
+            if not df.empty: return df
+    return _aggregate(rows)
 
-    last = _get_float(vix, ("last", "lastPrice", "lastValue", "value", "ltp"), default=None)
-    prev = _get_float(vix, ("previousClose", "prevClose"), default=None)
-    if last is None or prev in (None, 0.0):
-        return 0.0
-    return (last - prev) / prev * 100.0
+# -----------------------------
+# Metrics & labels
+# -----------------------------
+def compute_pcr_near_atm(chain: pd.DataFrame, spot: float, pct_window: float = 0.03) -> float:
+    if chain.empty or not math.isfinite(spot) or spot <= 0: return 1.0
+    lower, upper = spot * (1 - pct_window), spot * (1 + pct_window)
+    sub = chain[(chain["strike"] >= lower) & (chain["strike"] <= upper)]
+    if sub.empty: sub = chain
+    ce_oi, pe_oi = float(sub["ce_oi"].sum()), float(sub["pe_oi"].sum())
+    return (pe_oi / ce_oi) if ce_oi > 0 else 1.0
 
+def market_sentiment_from_pcr(pcr: float) -> str:
+    if not math.isfinite(pcr): return "Neutral"
+    if pcr < 0.8: return "Bearish"
+    if pcr > 1.2: return "Bullish"
+    return "Neutral"
 
-def _fetch_nifty_return_pct() -> float:
-    """
-    Returns NIFTY 50 return in % (last vs previousClose) if available; else 0.0.
-    """
-    rows = _fetch_all_indices()
-    # Accept common variants for NIFTY 50 name on this feed
-    for name in ("NIFTY 50", "NIFTY50", "NIFTY 50 INDEX"):
-        row = _get_index_row(name, rows)
-        if row:
-            last = _get_float(row, ("last", "lastPrice", "lastValue", "value", "ltp"))
-            prev = _get_float(row, ("previousClose", "prevClose"))
-            if last is not None and prev not in (None, 0.0):
-                return (last - prev) / prev * 100.0
-            break
-    return 0.0
+def market_regime_from_vix(vix: float, baseline: float = 12.0) -> str:
+    if not math.isfinite(vix) or vix <= 0: return "Unknown"
+    if vix < max(10.0, baseline * 0.9): return "Calm"
+    if vix > max(16.0, baseline * 1.2): return "Stressed"
+    return "Normal"
 
-
-def _fetch_market_breadth_ratio() -> float:
-    """
-    Computes a market breadth ratio using the allIndices feed.
-
-    Strategy:
-    1) If any row exposes `advances` and `declines` (rare but possible), compute sum(adv)/sum(dec).
-    2) Else, proxy breadth by counting indices with positive vs negative % change across a
-       curated basket (exclude VIX). If pos==neg==0, return 1.0.
-
-    Returns:
-        breadth_ratio = positives / max(1, negatives); if negatives=0 but positives>0, cap at 2.0.
-    """
-    rows = _fetch_all_indices()
-
-    # Try explicit advances/declines if present on any rows
-    adv_total = 0
-    dec_total = 0
-    for r in rows:
-        adv = r.get("advances")
-        dec = r.get("declines")
-        if isinstance(adv, (int, float)) and isinstance(dec, (int, float)):
-            adv_total += int(adv)
-            dec_total += int(dec)
-    if (adv_total + dec_total) > 0:
-        return (adv_total / max(1, dec_total)) if dec_total > 0 else 2.0
-
-    # Fallback: sign of percentage change across a reasonable basket (exclude VIX)
-    basket_names = {
-        "NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE", "NIFTY NEXT 50",
-        "NIFTY MIDCAP 100", "NIFTY SMALLCAP 100", "NIFTY IT", "NIFTY FMCG",
-        "NIFTY PHARMA", "NIFTY AUTO", "NIFTY METAL"
+# -----------------------------
+# Attempt + healing passes
+# -----------------------------
+def _attempt_snapshot(sess: requests.Session) -> dict:
+    nse_warmup(sess); _jitter_sleep()
+    fii = fetch_fiidii(sess); _jitter_sleep()
+    oc  = fetch_nifty_option_chain_nearest_expiry(sess); _jitter_sleep()
+    spot = fetch_nifty_spot(sess) or float("nan"); _jitter_sleep()
+    vix  = fetch_india_vix(sess); _jitter_sleep()
+    pcr = compute_pcr_near_atm(oc, spot, 0.03)
+    return {
+        "fii": fii, "oc": oc, "spot": spot, "vix": vix, "pcr": pcr,
+        "sentiment": market_sentiment_from_pcr(pcr), "regime": market_regime_from_vix(vix),
+        "ok_fii": True, "ok_oc": not oc.empty,
+        "ok_spot": math.isfinite(spot), "ok_vix": math.isfinite(vix),
     }
-    pos = neg = 0
-    for r in rows:
-        name = _norm_index_name(r)
-        if name in ("INDIA VIX", "INDIAVIX"):
-            continue
-        if basket_names and name not in basket_names:
-            continue
-        pct = _get_float(r, ("percentChange", "variation"))  # percentChange usually present
-        if pct is None:
-            # derive if last/prevClose available
-            last = _get_float(r, ("last", "lastPrice", "lastValue", "value", "ltp"))
-            prev = _get_float(r, ("previousClose", "prevClose"))
-            if last is not None and prev not in (None, 0.0):
-                pct = (last - prev) / prev * 100.0
-        if pct is None:
-            continue
-        if pct > 0:
-            pos += 1
-        elif pct < 0:
-            neg += 1
 
-    if pos == 0 and neg == 0:
-        return 1.0
-    if neg == 0:
-        return 2.0  # cap to avoid infinity
-    return pos / neg
+def _heal_missing(sess: requests.Session, snap: dict) -> dict:
+    if not snap["ok_oc"]:
+        print("INFO: Healing pass: refetching option chain...")
+        nse_warmup(sess); _jitter_sleep()
+        oc = fetch_nifty_option_chain_nearest_expiry(sess)
+        if not oc.empty:
+            snap.update({"oc": oc, "ok_oc": True})
+            if snap["ok_spot"]:
+                snap["pcr"] = compute_pcr_near_atm(oc, snap["spot"])
+                snap["sentiment"] = market_sentiment_from_pcr(snap["pcr"])
+    if not snap["ok_spot"]:
+        print("INFO: Healing pass: refetching NIFTY spot...")
+        nse_warmup(sess); _jitter_sleep()
+        spot = fetch_nifty_spot(sess) or float("nan")
+        snap.update({"spot": spot, "ok_spot": math.isfinite(spot)})
+        if snap["ok_spot"] and snap["ok_oc"]:
+            snap["pcr"] = compute_pcr_near_atm(snap["oc"], spot)
+            snap["sentiment"] = market_sentiment_from_pcr(snap["pcr"])
+    if not snap["ok_vix"]:
+        print("INFO: Healing pass: refetching India VIX...")
+        nse_warmup(sess); _jitter_sleep()
+        vix = fetch_india_vix(sess)
+        snap.update({"vix": vix, "ok_vix": math.isfinite(vix), "regime": market_regime_from_vix(vix)})
+    return snap
 
+# -----------------------------
+# Main orchestration
+# -----------------------------
+def main() -> None:
+    signal.signal(signal.SIGALRM, _alarm_handler)
+    signal.alarm(RUN_TIMEOUT_SECS)
 
-def _nearest_expiry(records: Dict[str, Any]) -> Optional[str]:
-    """
-    Return the first expiry from records['expiryDates'] (NSE orders by nearest).
-    """
-    exps = records.get("expiryDates") or []
-    return exps[0] if exps else None
+    # <<< MODIFIED: Added market hours check at the beginning >>>
+    if not is_nse_market_open():
+        print("\n[WARNING] 🕒 NSE market is currently closed. Live data like spot price and option chain may be stale or unavailable.\n")
+    # <<< END MODIFICATION >>>
 
+    sess = _build_session()
+    snapshot = None
+    for i in range(1, 4):
+        print(f"\n--- Starting fetch attempt {i}/3 ---")
+        snap = _attempt_snapshot(sess)
+        if snap["ok_oc"] and snap["ok_spot"] and snap["ok_vix"]:
+            snapshot = snap
+            print("--- Fetch successful on first try! ---")
+            break
+        print("--- Initial fetch incomplete, attempting to heal missing data... ---")
+        snap = _heal_missing(sess, snap)
+        if snap["ok_oc"] and snap["ok_spot"] and snap["ok_vix"]:
+            snapshot = snap
+            print("--- Fetch successful after healing pass! ---")
+            break
+        _jitter_sleep(0.5, 0.8)
 
-def _underlying_value(records: Dict[str, Any]) -> Optional[float]:
-    return _get_float(records, ("underlyingValue",), default=None)
+    if snapshot is None:
+        print("\n[FATAL] Could not retrieve complete data after multiple attempts. Using best-effort data.")
+        snapshot = snap
 
+    # Unpack for saving/printing
+    fii_dii_df, oc_df = snapshot["fii"], snapshot["oc"]
+    nifty_spot, india_vix = snapshot["spot"], snapshot["vix"]
+    pcr, sentiment, regime = snapshot["pcr"], snapshot["sentiment"], snapshot["regime"]
 
-def _select_near_atm_strikes(data: List[Dict[str, Any]], spot: Optional[float], width: int = 10) -> List[Dict[str, Any]]:
-    """
-    Return ~2*width rows around ATM (by absolute |strike-spot|). If spot is None, return all.
-    """
-    if spot is None:
-        return data
-    scored = []
-    for d in data:
-        k = d.get("strikePrice")
-        if k is None:
-            continue
-        scored.append((abs(k - spot), d))
-    scored.sort(key=lambda x: x[0])
-    return [d for _, d in scored[: 2 * width]]
+    # Save outputs
+    fii_dii_csv = DATE_DIR / "fii_dii.csv"
+    oc_csv = DATE_DIR / "nifty_option_chain_nearest_expiry.csv"
+    snapshot_json = DATE_DIR / "snapshot.json"
+    snapshot_txt = DATE_DIR / "snapshot.txt"
 
+    fii_dii_df.to_csv(fii_dii_csv, index=False)
+    oc_df.to_csv(oc_csv, index=False)
 
-# ----------------------------- Option Chain Fetch ----------------------------
+    snapshot_meta = {
+        "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
+        "nifty_spot": round(float(nifty_spot), 2) if math.isfinite(nifty_spot) else None,
+        "india_vix": round(float(india_vix), 2) if math.isfinite(india_vix) else None,
+        "pcr_near_atm": round(float(pcr), 3) if math.isfinite(pcr) else None,
+        "market_sentiment": sentiment,
+        "market_regime": regime,
+        "files": {"fii_dii_csv": str(fii_dii_csv), "option_chain_csv": str(oc_csv)},
+    }
+    with open(snapshot_json, "w", encoding="utf-8") as f:
+        json.dump(snapshot_meta, f, ensure_ascii=False, indent=2)
 
-def fetch_nse_option_chain(symbol: str = "NIFTY") -> pd.DataFrame:
-    """
-    Returns a tidy option chain (nearest expiry) for the given index symbol.
-    Columns:
-      strike, ce_oi, ce_chg_oi, ce_vol, ce_iv, pe_oi, pe_chg_oi, pe_vol, pe_iv
-    """
-    payload = _retry(nse_optionchain_scrapper, symbol)
-    records = payload.get("records", {})
-    data: List[Dict[str, Any]] = payload.get("records", {}).get("data", [])
-    if not isinstance(data, list):
-        return pd.DataFrame(columns=["strike", "ce_oi", "ce_chg_oi", "ce_vol", "ce_iv",
-                                     "pe_oi", "pe_chg_oi", "pe_vol", "pe_iv"])
+    # Human-friendly text snapshot
+    lines = [
+        "--- Market Snapshot ---",
+        f"NIFTY Spot: {nifty_spot if math.isfinite(nifty_spot) else 'FAILED TO FETCH'}",
+        f"India VIX:  {india_vix if math.isfinite(india_vix) else 'FAILED TO FETCH'}",
+        f"PCR (±3%):  {pcr:.3f}" if math.isfinite(pcr) else "PCR: N/A",
+        f"Sentiment:  {sentiment}",
+        f"Regime:     {regime}",
+        "\nFII/DII Data (head):",
+        fii_dii_df.head(6).to_string(index=False) if not fii_dii_df.empty else "  <no data>",
+        "\nNIFTY Option Chain — Nearest Expiry (head):",
+        oc_df.head(10).to_string(index=False) if not oc_df.empty else "  <no data>"
+    ]
+    text = "\n".join(lines)
+    with open(snapshot_txt, "w", encoding="utf-8") as f: f.write(text + "\n")
 
-    # Filter to nearest expiry to avoid duplicate strikes across expiries
-    target_exp = _nearest_expiry(records)
-    rows = []
-    for item in data:
-        k = item.get("strikePrice")
-        ce = item.get("CE") or {}
-        pe = item.get("PE") or {}
+    print("\n" + text)
+    print("\n✅ Saved outputs to:")
+    print(f" - {fii_dii_csv}")
+    print(f" - {oc_csv}")
+    print(f" - {snapshot_json}")
+    print(f" - {snapshot_txt}")
 
-        # Keep only rows where CE/PE match nearest expiry (if available)
-        ce_exp_ok = (not ce) or (ce.get("expiryDate") == target_exp)
-        pe_exp_ok = (not pe) or (pe.get("expiryDate") == target_exp)
-        if k is None or not (ce_exp_ok or pe_exp_ok):
-            continue
-
-        rows.append({
-            "strike": k,
-            "ce_oi": ce.get("openInterest", 0) or 0,
-            "ce_chg_oi": ce.get("changeinOpenInterest", 0) or 0,
-            "ce_vol": ce.get("totalTradedVolume", 0) or 0,
-            "ce_iv": ce.get("impliedVolatility", 0) or 0.0,
-            "pe_oi": pe.get("openInterest", 0) or 0,
-            "pe_chg_oi": pe.get("changeinOpenInterest", 0) or 0,
-            "pe_vol": pe.get("totalTradedVolume", 0) or 0,
-            "pe_iv": pe.get("impliedVolatility", 0) or 0.0,
-        })
-
-    df = pd.DataFrame(rows).sort_values("strike").reset_index(drop=True)
-    return df
-
-
-# ----------------------------- PCR and Sentiment -----------------------------
-
-def _compute_pcr_near_atm(symbol: str = "NIFTY", width: int = 10) -> float:
-    """
-    Computes Put/Call OI Ratio (PCR) using only strikes near ATM for the
-    nearest expiry. This avoids noisy far OTM strikes across multiple expiries.
-    """
-    payload = _retry(nse_optionchain_scrapper, symbol)
-    records = payload.get("records", {})
-    data = records.get("data", [])
-    if not data:
-        return 1.0
-
-    target_exp = _nearest_expiry(records)
-    spot = _underlying_value(records)
-
-    # Keep nearest-expiry rows only
-    exp_rows = []
-    for item in data:
-        ce = item.get("CE") or {}
-        pe = item.get("PE") or {}
-        if (ce and ce.get("expiryDate") != target_exp) and (pe and pe.get("expiryDate") != target_exp):
-            continue
-        exp_rows.append(item)
-
-    # Slice around ATM
-    near = _select_near_atm_strikes(exp_rows, spot, width=width)
-
-    ce_oi = sum((x.get("CE") or {}).get("openInterest", 0) or 0 for x in near)
-    pe_oi = sum((x.get("PE") or {}).get("openInterest", 0) or 0 for x in near)
-    if ce_oi <= 0:
-        return 1.0
-    return float(pe_oi) / float(ce_oi)
-
-
-def fetch_market_sentiment() -> str:
-    """
-    Composes a simple market sentiment signal from four components:
-      1) Breadth ratio from allIndices (positives/negatives or advances/declines).
-      2) PCR near ATM on NIFTY (nearest expiry).
-      3) India VIX % change vs previous close.
-      4) NIFTY 50 return % vs previous close.
-
-    Scoring:
-      - Breadth > 1.1 -> +1; < 0.9 -> -1; else 0
-      - PCR in [0.9, 1.1] -> 0; > 1.1 -> -1; < 0.9 -> +1
-      - VIX Δ% > +5 -> -1; < -5 -> +1; else 0
-      - NIFTY return > +0.5 -> +1; < -0.5 -> -1; else 0
-    """
-    breadth = _fetch_market_breadth_ratio()
-    pcr = _compute_pcr_near_atm("NIFTY", width=10)
-    vix_delta = _fetch_vix_change_pct()
-    nifty_ret = _fetch_nifty_return_pct()
-
-    score = 0
-    score += 1 if breadth > 1.1 else (-1 if breadth < 0.9 else 0)
-    score += 0 if 0.9 <= pcr <= 1.1 else (-1 if pcr > 1.1 else 1)
-    score += -1 if vix_delta > 5.0 else (1 if vix_delta < -5.0 else 0)
-    score += 1 if nifty_ret > 0.5 else (-1 if nifty_ret < -0.5 else 0)
-
-    return "Positive" if score > 1 else ("Negative" if score < -1 else "Neutral")
-
-
-# ------------------------------ ATR Regime Filter ----------------------------
-
-def atr_trend_filter(df_ohlc: pd.DataFrame, window: int = 14) -> Tuple[str, pd.DataFrame]:
-    """
-    Computes a simple ATR slope on an OHLC DataFrame and classifies regime.
-
-    Args:
-        df_ohlc: DataFrame with columns ['high','low','close'] (at minimum).
-        window: ATR window length (default 14).
-
-    Returns:
-        (regime, tail_df) where regime is "Volatile" if recent ATR slope > 0, else "Calm",
-        and tail_df shows the last ATR/ATR_slope rows for inspection.
-    """
-    df = df_ohlc.copy()
-    if not {"high", "low", "close"}.issubset(df.columns):
-        raise ValueError("df_ohlc must contain 'high','low','close' columns")
-
-    df["H-L"] = df["high"] - df["low"]
-    df["H-PC"] = (df["high"] - df["close"].shift(1)).abs()
-    df["L-PC"] = (df["low"] - df["close"].shift(1)).abs()
-    tr = df[["H-L", "H-PC", "L-PC"]].max(axis=1)
-
-    df["atr"] = tr.rolling(window=window, min_periods=window).mean()
-    df["atr_slope"] = df["atr"].diff()
-
-    # Slope over the most recent 5 values (where available)
-    slope = df["atr_slope"].tail(5).mean()
-    regime = "Volatile" if (pd.notna(slope) and slope > 0) else "Calm"
-    return regime, df[["atr", "atr_slope"]].tail(5)
-
-
-# ---------------------------------- Script -----------------------------------
+    signal.alarm(0)
 
 if __name__ == "__main__":
-    print("FII/DII Data:")
-    print(fetch_fii_dii())
-
-    print("\nMarket Sentiment:")
-    print(fetch_market_sentiment())
-
-    print("\nNIFTY Option Chain (nearest expiry, first 5 rows):")
-    print(fetch_nse_option_chain("NIFTY").head())
-
-    print("\nIndia VIX:")
-    print(fetch_nifty_vix())
+    try:
+        main()
+        sys.exit(0)
+    except TimeoutError as e:
+        print(f"\n[FATAL] {e}")
+        sys.exit(124)
+    except Exception as e:
+        print(f"\n[FATAL] An unexpected error occurred: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

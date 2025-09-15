@@ -41,18 +41,28 @@ DATE_DIR.mkdir(parents=True, exist_ok=True)
 
 NSE_BASE = "https://www.nseindia.com"
 
+# Replace NSE_HEADERS with:
 NSE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": NSE_BASE + "/",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Referer": "https://www.nseindia.com/option-chain",
     "Connection": "keep-alive",
     "DNT": "1",
     "Pragma": "no-cache",
     "Cache-Control": "no-cache",
+
+    # Chrome-style fetch hints help pass bot checks
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Ch-Ua": '"Chromium";v="140", "Not(A:Brand)";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Linux"',
 }
 
 # Snappy networking defaults
@@ -151,6 +161,9 @@ def _build_session() -> requests.Session:
     sess.mount("http://", adapter)
     return sess
 
+def _looks_blocked(text: str) -> bool:
+    t = (text or "").lower()
+    return ("are you a human" in t) or ("access denied" in t) or ("captcha" in t)
 
 def _retry_get(url: str, session: Optional[requests.Session] = None) -> Dict[str, Any]:
     """HTTP GET with manual retry/backoff (in addition to HTTPAdapter retries).
@@ -161,15 +174,23 @@ def _retry_get(url: str, session: Optional[requests.Session] = None) -> Dict[str
         try:
             r = sess.get(url, headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
             if r.status_code == 200:
+                # check if NSE served a block / captcha page instead of JSON
+                if _looks_blocked(r.text):
+                    nse_warmup(sess)
+                    time.sleep(RETRY_BACKOFF ** i)
+                    continue
                 try:
                     js = r.json()
                     return js if isinstance(js, dict) else {"data": js}
                 except Exception:
-                    pass
+                    pass  # fall through to retry
+
             if r.status_code in STATUS_FORCELIST:
+                nse_warmup(sess)
                 time.sleep(RETRY_BACKOFF ** i)
                 continue
-            break
+
+            break  # non-retryable status
         except Exception:
             time.sleep(RETRY_BACKOFF ** i)
             continue
@@ -179,10 +200,13 @@ def _retry_get(url: str, session: Optional[requests.Session] = None) -> Dict[str
 # Warm-up (cookie priming)
 # -----------------------------
 def nse_warmup(session: requests.Session) -> None:
-    """Hit homepage + a cheap API to set cookies so subsequent API calls work."""
     try:
         session.get(NSE_BASE + "/", headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
-        _jitter_sleep(0.2, 0.3)
+        _jitter_sleep(0.3, 0.4)
+        session.get(NSE_BASE + "/market-data", headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
+        _jitter_sleep(0.3, 0.4)
+        session.get(NSE_BASE + "/option-chain", headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
+        _jitter_sleep(0.3, 0.4)
         session.get(URL_ALL_INDICES, headers=NSE_HEADERS, timeout=TIMEOUT, allow_redirects=True)
     except Exception:
         pass
@@ -557,12 +581,12 @@ def main() -> None:
     signal.alarm(0)
 
 if __name__ == "__main__":
-    try:
-        main()
-        sys.exit(0)
-    except TimeoutError as e:
-        print(f"[FATAL] {e}")
-        sys.exit(124)
-    except Exception as e:
-        print(f"[FATAL] {e}")
-        sys.exit(1)
+    # try:
+    main()
+    sys.exit(0)
+    # except TimeoutError as e:
+    #     print(f"[FATAL] {e}")
+    #     sys.exit(124)
+    # except Exception as e:
+    #     print(f"[FATAL] {e}")
+    #     sys.exit(1)
