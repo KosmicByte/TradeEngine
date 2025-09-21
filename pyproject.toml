@@ -39,6 +39,8 @@ dependencies = [
   "pytz>=2025.2",
   "playwright>=1.55.0",
   "curl-cffi>=0.13.0",
+  "nsetools>=2.0.1",
+  "bharat-sm-data>=4.0.1",
 ]
 
 [project.optional-dependencies]
