@@ -21,6 +21,8 @@ dependencies = [
   "typer>=0.12.0",
   "rich>=13.0.0",
   "matplotlib>=3.8.0",
+  "plotly>=6.6.0",
+  "kaleido>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +34,8 @@ dev = [
 stochax-simulate = "stochax_market.cli:simulate_app"
 stochax-fit = "stochax_market.cli:fit_app"
 stochax-predict = "stochax_market.cli:predict_app"
+stochax-visualize  = "stochax_market.cli:visualize_app"
+stochax-export = "stochax_market.cli:export_app"
 
 [build-system]
 requires = ["hatchling"]

@@ -21,6 +21,7 @@ simulate_app = typer.Typer(name="stochax-simulate", add_completion=False)
 def simulate_main(
     symbol: str = typer.Option("RELIANCE", "--symbol", "-s", help="Stock symbol"),
     steps: int = typer.Option(252, "--steps", "-n", help="Number of timesteps"),
+    params:  Path = typer.Option(None,         help="Path to fitted params.pkl"),
     output: str | None = typer.Option(None, "--output", "-o", help="Output CSV path"),
     seed: int = typer.Option(42, "--seed", help="Random seed"),
 ):
@@ -28,7 +29,7 @@ def simulate_main(
     from stochax_market.simulate import simulate
 
     console.print(f"[bold blue]Simulating {symbol} for {steps} steps...[/bold blue]")
-    result = simulate(symbol, n_steps=steps, output_path=output, seed=seed)
+    result = simulate(symbol, n_steps=steps, output_path=output, seed=seed, params_path=params)
 
     table = Table(title=f"Simulation Results: {symbol}")
     table.add_column("Metric", style="cyan")
@@ -73,7 +74,7 @@ def fit_main(
     fitted_spde, fitted_garch, info = fit(spde, garch, features, n_steps=n_steps, key=key)
 
     with open(output, "wb") as f:
-        pickle.dump((fitted_spde, fitted_garch), f)
+        pickle.dump((fitted_spde, fitted_garch, features["L"]), f)
 
     table = Table(title=f"Calibration Results: {symbol}")
     table.add_column("Metric", style="cyan")
@@ -82,6 +83,8 @@ def fit_main(
         table.add_row(str(k), str(v))
     table.add_row("Output file", output)
     console.print(table)
+    if "final_loss" in info:
+        console.print(f"[bold yellow]Final loss: {info['final_loss']:.6f}[/bold yellow]")
     console.print("[bold green]✓ Calibration complete[/bold green]")
 
 
@@ -126,3 +129,59 @@ def predict_main(
 
     console.print(table)
     console.print("[bold green]✓ Prediction complete[/bold green]")
+
+visualize_app = typer.Typer()
+
+@visualize_app.command()
+
+def visualize(
+    symbol:      str            = typer.Option(...,        help="Stock symbol e.g. RELIANCE"),
+    sim_csv:     Path           = typer.Option(None,       help="Path to simulation CSV"),
+    params:      Path           = typer.Option(None,       help="Path to params.pkl"),
+    horizon:     int            = typer.Option(21,         help="Prediction horizon (trading days)"),
+    recent_n:    int            = typer.Option(60,         help="Recent days shown in prediction chart"),
+    out_dir:     Path           = typer.Option("plots",    help="Output directory for PNGs"),
+    seed:        int            = typer.Option(42,         help="Random seed for MC sampling"),
+):
+    """Generate all diagnostic and results plots for a stock symbol."""
+    from stochax_market.visualize import run_all
+
+    console.print(f"[bold cyan]Generating plots for {symbol}...[/bold cyan]")
+
+    saved = run_all(
+        symbol      = symbol,
+        sim_csv     = sim_csv,
+        params_path = params,
+        horizon     = horizon,
+        recent_n    = recent_n,
+        out_dir     = out_dir,
+        seed        = seed,
+    )
+
+    table = Table(title=f"Visualisation Output: {symbol}", show_lines=True)
+    table.add_column("Plot",        style="bold")
+    table.add_column("Saved To",    style="green")
+
+    for name, path in saved.items():
+        table.add_row(name.replace("_", " ").title(), str(path))
+
+    console.print(table)
+    console.print("[bold green]✓ All plots saved[/bold green]")
+
+
+# --- export CLI ---
+
+export_app = typer.Typer(name="stochax-export", add_completion=False)
+
+
+@export_app.command()
+def latex(
+    symbol: str = typer.Option(..., help="Stock symbol"),
+    params: Path = typer.Option("params.pkl", help="Path to fitted params"),
+    output: Path = typer.Option(None, help="Output PDF path"),
+):
+    """Export fitted model equations to LaTeX PDF."""
+    from stochax_market.export.latex import export_model_pdf
+
+    pdf_path = export_model_pdf(symbol, params, output)
+    console.print(f"[green]✓[/green] Model exported to {pdf_path}")

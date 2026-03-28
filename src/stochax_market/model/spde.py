@@ -100,11 +100,10 @@ class SPDEStepper(eqx.Module):
 
         u_next = u_diffused + noise_term + drift_term
 
-        # Ensure non-negativity (probability-like field)
+        # Soft floor: prevent negative probability density without
+        # renormalising — renormalisation would destroy price information
+        # by forcing field_mean = ∫x·u dx to a constant every step.
         u_next = jnp.maximum(u_next, 0.0)
-
-        # Renormalize to prevent blow-up
-        u_next = u_next / (jnp.sum(u_next) * self.domain_extent / self.nx + 1e-8)
 
         return u_next
 

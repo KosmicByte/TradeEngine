@@ -85,3 +85,33 @@ class TestEncodeFeatures:
         features = encode_features(df, nx=64)
         assert jnp.all(features["seasonal"] >= -1.0)
         assert jnp.all(features["seasonal"] <= 1.0)
+
+    def test_split_day_masked_to_zero(self):
+        """log_returns > 0.25 in magnitude (split/bonus days) are set to 0."""
+        n = 10
+        dates = pd.date_range("2023-01-01", periods=n, freq="B")
+        rng = np.random.default_rng(0)
+        prices = 1000.0 + np.cumsum(rng.normal(0, 5, n))
+        # Inject a synthetic 50% stock split at index 5
+        prices[5] = prices[4] * 0.5
+
+        df = pd.DataFrame({
+            "Date": dates,
+            "Prev Close": np.roll(prices, 1),
+            "Open": prices + rng.normal(0, 2, n),
+            "High": prices + abs(rng.normal(0, 5, n)),
+            "Low": prices - abs(rng.normal(0, 5, n)),
+            "Close": prices,
+            "VWAP": prices + rng.normal(0, 1, n),
+        })
+
+        features = encode_features(df, nx=32)
+        lr = np.array(features["log_returns"])
+        drift = np.array(features["drift"])
+
+        # The split day should be neutralised to 0.0
+        assert float(np.max(np.abs(lr))) <= 0.25, (
+            "log_returns should have no entry larger than the split threshold"
+        )
+        assert not np.any(np.isnan(lr)), "log_returns must contain no NaN values"
+        assert not np.any(np.isnan(drift)), "drift must contain no NaN values"
