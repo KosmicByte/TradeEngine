@@ -32,7 +32,7 @@ _C = dict(
     hlband  = "rgba(91,141,239,0.10)",
 )
 
-_LEGEND = dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5)
+_LEGEND = dict(orientation="h", yanchor="top", y=0, xanchor="center", x=0.5)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

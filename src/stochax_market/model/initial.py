@@ -58,7 +58,7 @@ def make_initial_condition(
     Returns:
         Shape (nx,) normalized Gaussian initial condition on [0, 1].
     """
-    x0 = last_price / domain_extent            # normalised coordinate
-    x0 = float(jnp.clip(jnp.float32(x0), 0.0, 1.0))  # keep on the [0,1] grid
+    x0 = last_price / domain_extent  # normalised coordinate
+    x0 = jnp.clip(jnp.asarray(x0, dtype=jnp.float32), 0.0, 1.0)  # keep on the [0,1] grid
     width_norm = sigma_width / domain_extent    # normalised width
     return price_to_field(x0, L=1.0, nx=nx, width=width_norm)

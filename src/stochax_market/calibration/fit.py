@@ -119,12 +119,22 @@ def fit(
             (y[1], y[2], y[3]),
         )
 
-        # Penalty: reward non-constant volatility by maximising variance of
-        # the GARCH sigma trajectory computed on clean (non-NaN) returns.
+        # Penalty: reward non-constant volatility by maximising the masked
+        # variance of the GARCH sigma trajectory.  Boolean indexing produces
+        # dynamic-length arrays that break JAX JIT/grad; instead we keep the
+        # shape static by using jnp.where and computing a weighted variance.
         lr = small_data["log_returns"]
-        lr_clean = lr[~jnp.isnan(lr)]
-        sigma_trajectory = garch(lr_clean)
-        sigma_variance_penalty = -0.01 * jnp.var(sigma_trajectory)
+        lr_mask = (~jnp.isnan(lr)).astype(jnp.float32)
+        lr_safe = jnp.where(jnp.isnan(lr), 0.0, lr)
+        sigma_trajectory = garch(lr_safe)
+        count = jnp.sum(lr_mask)
+        safe_count = jnp.maximum(count, 1.0)
+        sigma_mean = jnp.sum(sigma_trajectory * lr_mask) / safe_count
+        # Population variance (÷ N) is appropriate here: this is a regularisation
+        # penalty, not a statistical estimator, so Bessel's correction is not needed.
+        sigma_var = jnp.sum(lr_mask * (sigma_trajectory - sigma_mean) ** 2) / safe_count
+        sigma_var_masked = jnp.where(count > 1.0, sigma_var, 0.0)
+        sigma_variance_penalty = -0.01 * sigma_var_masked
 
         predicted = _run_model(spde, garch, small_data, noise_key)
         target = small_data["close_target"]
