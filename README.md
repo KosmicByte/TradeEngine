@@ -38,6 +38,27 @@ stochax-fit --symbol RELIANCE --n-steps 5 --output params.pkl
 stochax-predict --symbol RELIANCE --horizon 3 --params params.pkl
 ```
 
+#### Visualize results
+
+```bash
+
+# Minimum — historical + log-returns + volatility only
+stochax-visualize --symbol RELIANCE --out-dir plots/
+
+# With simulation overlay
+stochax-visualize --symbol RELIANCE \
+  --sim-csv RELIANCE_sim.csv \
+  --out-dir plots/
+
+# Full suite — all 6 plots including prediction + GARCH fit
+stochax-visualize --symbol RELIANCE \
+  --sim-csv RELIANCE_sim.csv \
+  --params params.pkl \
+  --horizon 21 \
+  --recent-n 60 \
+  --out-dir plots/
+
+```
 ## Project Structure
 
 ```
