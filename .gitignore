@@ -1,7 +1,7 @@
 .venv/
 *.lock
 results/
-data/
+/data/
 *.pyc
 __pycache__/
 *.egg-info/
