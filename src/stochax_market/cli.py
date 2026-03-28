@@ -133,6 +133,7 @@ def predict_main(
 visualize_app = typer.Typer()
 
 @visualize_app.command()
+
 def visualize(
     symbol:      str            = typer.Option(...,        help="Stock symbol e.g. RELIANCE"),
     sim_csv:     Path           = typer.Option(None,       help="Path to simulation CSV"),
@@ -166,3 +167,21 @@ def visualize(
 
     console.print(table)
     console.print("[bold green]✓ All plots saved[/bold green]")
+
+
+# --- export CLI ---
+
+export_app = typer.Typer(name="stochax-export", add_completion=False)
+
+
+@export_app.command()
+def latex(
+    symbol: str = typer.Option(..., help="Stock symbol"),
+    params: Path = typer.Option("params.pkl", help="Path to fitted params"),
+    output: Path = typer.Option(None, help="Output PDF path"),
+):
+    """Export fitted model equations to LaTeX PDF."""
+    from stochax_market.export.latex import export_model_pdf
+
+    pdf_path = export_model_pdf(symbol, params, output)
+    console.print(f"[green]✓[/green] Model exported to {pdf_path}")

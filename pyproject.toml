@@ -35,6 +35,7 @@ stochax-simulate = "stochax_market.cli:simulate_app"
 stochax-fit = "stochax_market.cli:fit_app"
 stochax-predict = "stochax_market.cli:predict_app"
 stochax-visualize  = "stochax_market.cli:visualize_app"
+stochax-export = "stochax_market.cli:export_app"
 
 [build-system]
 requires = ["hatchling"]
