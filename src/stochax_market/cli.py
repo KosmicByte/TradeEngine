@@ -21,6 +21,7 @@ simulate_app = typer.Typer(name="stochax-simulate", add_completion=False)
 def simulate_main(
     symbol: str = typer.Option("RELIANCE", "--symbol", "-s", help="Stock symbol"),
     steps: int = typer.Option(252, "--steps", "-n", help="Number of timesteps"),
+    params:  Path = typer.Option(None,         help="Path to fitted params.pkl"),
     output: str | None = typer.Option(None, "--output", "-o", help="Output CSV path"),
     seed: int = typer.Option(42, "--seed", help="Random seed"),
 ):
@@ -28,7 +29,7 @@ def simulate_main(
     from stochax_market.simulate import simulate
 
     console.print(f"[bold blue]Simulating {symbol} for {steps} steps...[/bold blue]")
-    result = simulate(symbol, n_steps=steps, output_path=output, seed=seed)
+    result = simulate(symbol, n_steps=steps, output_path=output, seed=seed, params_path=params)
 
     table = Table(title=f"Simulation Results: {symbol}")
     table.add_column("Metric", style="cyan")

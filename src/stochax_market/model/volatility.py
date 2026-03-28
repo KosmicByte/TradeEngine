@@ -74,17 +74,17 @@ class GARCHVolatility(eqx.Module):
         return jnp.minimum(beta_unconstrained, 0.999 - alpha)
 
     def __call__(self, log_returns: jnp.ndarray) -> jnp.ndarray:
-        """Compute GARCH(1,1) conditional variance series.
+        """Compute GARCH(1,1) conditional volatility series.
 
         Args:
             log_returns: Shape (T,) array of log-returns.
 
         Returns:
-            Shape (T,) array of conditional volatilities σ_t.
+            Shape (T,) array of conditional volatilities σ_t (daily, log-return scale).
         """
         omega = self.omega
         alpha = self.alpha
-        beta = self.beta
+        beta  = self.beta
 
         sigma2_init = omega / (1.0 - alpha - beta + 1e-8)
 
@@ -92,8 +92,8 @@ class GARCHVolatility(eqx.Module):
             sigma2_prev = carry
             # Replace NaN returns (e.g. split-adjusted days) with 0 so the
             # ARCH term does not propagate NaN through the variance path.
-            x_safe = jnp.where(jnp.isnan(x_t), 0.0, x_t)
-            sigma2_t = omega + alpha * x_safe**2 + beta * sigma2_prev
+            x_safe  = jnp.where(jnp.isnan(x_t), 0.0, x_t)
+            sigma2_t = omega + alpha * x_safe ** 2 + beta * sigma2_prev
             sigma2_t = jnp.maximum(sigma2_t, 1e-8)
             return sigma2_t, sigma2_t
 
@@ -108,15 +108,28 @@ class GARCHVolatility(eqx.Module):
         Uses a half-period sinusoidal modulation for non-trivial spatial
         structure with guaranteed non-zero amplitude.
 
+        The raw sigma_t is in daily log-return units (~0.01–0.05). The SPDE
+        field u has values O(1/nx) from make_initial_condition (unit-integral
+        Gaussian). The noise term in step() is:
+            sigma_field * u * noise_increment
+            ~ sigma_t * (1/nx) * empirical_sigma * sqrt(dt)
+            ~ 0.02 * 0.008 * 0.001 = 1.6e-7  ← invisible without rescaling
+
+        Multiplying sigma_t by nx lifts sigma_field to O(1), making the noise
+        term commensurate with the field values:
+            sigma_field * u * noise_increment
+            ~ (sigma_t * nx) * (1/nx) * empirical_sigma * sqrt(dt)
+            ~ sigma_t * empirical_sigma * sqrt(dt)  ← correct daily increment
+
         Args:
-            sigma_t: Scalar volatility value.
+            sigma_t: Scalar volatility value (daily log-return scale).
             nx: Number of spatial grid points.
 
         Returns:
-            Shape (nx,) spatial volatility field.
+            Shape (nx,) spatial volatility field scaled to field magnitude.
         """
-        return sigma_t * (
+        # Multiply by nx to counteract the 1/nx magnitude of the field u,
+        # so the effective noise amplitude is O(sigma_t) not O(sigma_t/nx).
+        return sigma_t * nx * (
             1.0 + 0.1 * jnp.sin(jnp.linspace(0, jnp.pi, nx, dtype=jnp.float32))
         )
-
-
