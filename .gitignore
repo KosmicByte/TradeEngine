@@ -4,4 +4,11 @@ results/
 data/
 *.pyc
 __pycache__/
-
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+*.pkl
+*.png
+*.prof
