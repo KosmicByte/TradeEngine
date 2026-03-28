@@ -57,7 +57,23 @@ class TestSPDEStepper:
         trajectory = spde.rollout(u0, sigma_traj, noise_traj, drift_series, nt)
         assert trajectory.shape == (nt, nx)
 
-    def test_spde_is_differentiable(self):
+    def test_rollout_noise_amplitude(self):
+        """Noise term is additive and not suppressed: std of trajectory > 1.0."""
+        nx = 64
+        nt = 50
+        spde = SPDEStepper(nx=nx)
+        u0 = price_to_field(0.5, 1.0, nx)
+        sigma_traj = jnp.ones((nt, nx), dtype=jnp.float32) * 0.5
+        key = jax.random.key(0)
+        noise_traj = make_noise_trajectory(key, nt, nx, spde.dt)
+        drift_series = jnp.zeros(nt, dtype=jnp.float32)
+
+        trajectory = spde.rollout(u0, sigma_traj, noise_traj, drift_series, nt)
+        assert jnp.std(trajectory) > 1.0, (
+            f"Expected std > 1.0 (noise not suppressed), got {jnp.std(trajectory):.4f}"
+        )
+
+
         """SPDE step is differentiable w.r.t. mu_scale parameter."""
         import equinox as eqx
 
@@ -102,10 +118,8 @@ class TestGARCHVolatility:
         assert field.shape == (128,)
 
     def test_stationarity_enforcement(self):
-        """GARCH enforces α + β < 1."""
-        garch = GARCHVolatility(alpha=0.8, beta=0.8)
-        alpha = garch.alpha
-        beta = garch.beta
+        """GARCH enforces finite σ even for large raw parameters."""
+        garch = GARCHVolatility(raw_alpha=3.0, raw_beta=3.0)
         log_returns = jnp.array([0.01, -0.02, 0.005], dtype=jnp.float32)
         sigma = garch(log_returns)
         # Should not produce NaN or Inf

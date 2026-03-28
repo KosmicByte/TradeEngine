@@ -56,8 +56,12 @@ def make_noise_trajectory(
 ) -> jnp.ndarray:
     """Generate a noise trajectory of shape (nt, nx) with √dt scaling.
 
+    Threads the random key through jax.lax.scan so each timestep uses a
+    distinct subkey derived from the previous one, guaranteeing independent
+    noise increments per step.
+
     Args:
-        key: JAX random key.
+        key: JAX random key (first positional argument).
         nt: Number of timesteps.
         nx: Number of spatial grid points.
         dt: Time step size.
@@ -74,11 +78,11 @@ def make_noise_trajectory(
     modes = jnp.arange(1, n_modes + 1, dtype=jnp.float32)
     eigenvalues = modes ** (-decay_rate)
 
-    keys = jax.random.split(key, nt)
+    def _step(carry_key: jax.Array, _: None) -> tuple[jax.Array, jnp.ndarray]:
+        carry_key, subkey = jax.random.split(carry_key)
+        sample = make_wiener_sample(subkey, nx, n_modes, eigenvalues, dx)
+        return carry_key, sample
 
-    def _sample_one(k: jax.Array) -> jnp.ndarray:
-        return make_wiener_sample(k, nx, n_modes, eigenvalues, dx)
-
-    samples = jax.vmap(_sample_one)(keys)  # (nt, nx)
+    _, samples = jax.lax.scan(_step, key, None, length=nt)  # (nt, nx)
 
     return jnp.sqrt(dt) * samples

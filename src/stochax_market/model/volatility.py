@@ -28,25 +28,26 @@ class GARCHVolatility(eqx.Module):
 
     def __init__(
         self,
-        omega: float = 0.1,
-        alpha: float = 0.1,
-        beta: float = 0.8,
+        raw_omega: float = 0.5,
+        raw_alpha: float = 0.3,
+        raw_beta: float = 1.5,
     ):
-        """Initialize GARCH parameters.
+        """Initialize GARCH parameters directly in unconstrained space.
 
-        Defaults (ω=0.1, α=0.1, β=0.8) satisfy the stationarity condition
-        α + β = 0.9 < 1 and produce a non-trivial long-run variance of
-        ω / (1 − α − β) = 1.0, ensuring physically-meaningful volatility
-        before any calibration step.
+        Stores raw (unconstrained) values that are transformed at access time:
+        omega = softplus(raw_omega), alpha = softplus(raw_alpha),
+        beta = softplus(raw_beta) * (1 - alpha - 1e-3). The stationarity
+        condition alpha + beta < 1 is additionally enforced inside __call__
+        as a safety net.
 
         Args:
-            omega: Base variance (ω > 0).
-            alpha: ARCH coefficient (α ≥ 0).
-            beta: GARCH coefficient (β ≥ 0).
+            raw_omega: Unconstrained parameter for ω (stored directly).
+            raw_alpha: Unconstrained parameter for α (stored directly).
+            raw_beta: Unconstrained parameter for β (stored directly).
         """
-        self.raw_omega = _inverse_softplus(jnp.float32(omega))
-        self.raw_alpha = _inverse_softplus(jnp.float32(alpha))
-        self.raw_beta = _inverse_softplus(jnp.float32(beta))
+        self.raw_omega = jnp.float32(raw_omega)
+        self.raw_alpha = jnp.float32(raw_alpha)
+        self.raw_beta = jnp.float32(raw_beta)
 
     @property
     def omega(self) -> jnp.ndarray:
@@ -58,7 +59,9 @@ class GARCHVolatility(eqx.Module):
 
     @property
     def beta(self) -> jnp.ndarray:
-        return jax.nn.softplus(self.raw_beta)
+        return jax.nn.softplus(self.raw_beta) * (
+            1.0 - jax.nn.softplus(self.raw_alpha) - 1e-3
+        )
 
     def __call__(self, log_returns: jnp.ndarray) -> jnp.ndarray:
         """Compute GARCH(1,1) conditional variance series.
@@ -95,8 +98,8 @@ class GARCHVolatility(eqx.Module):
     def to_spatial_field(sigma_t: jnp.ndarray, nx: int) -> jnp.ndarray:
         """Broadcast scalar σ_t to a spatial field of shape (nx,).
 
-        Uses a constant base plus small sinusoidal perturbation for spatial
-        structure.
+        Uses a half-period sinusoidal modulation for non-trivial spatial
+        structure with guaranteed non-zero amplitude.
 
         Args:
             sigma_t: Scalar volatility value.
@@ -105,11 +108,8 @@ class GARCHVolatility(eqx.Module):
         Returns:
             Shape (nx,) spatial volatility field.
         """
-        x = jnp.linspace(0.0, 1.0, nx, dtype=jnp.float32)
-        perturbation = 0.05 * jnp.sin(2.0 * jnp.pi * x)
-        return sigma_t * (1.0 + perturbation)
+        return sigma_t * (
+            1.0 + 0.1 * jnp.sin(jnp.linspace(0, jnp.pi, nx, dtype=jnp.float32))
+        )
 
 
-def _inverse_softplus(x: jnp.ndarray) -> jnp.ndarray:
-    """Inverse of softplus: log(exp(x) - 1)."""
-    return jnp.log(jnp.exp(x) - 1.0 + 1e-8)
