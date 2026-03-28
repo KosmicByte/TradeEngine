@@ -118,6 +118,14 @@ def fit(
             frozen_garch,
             (y[1], y[2], y[3]),
         )
+
+        # Penalty: reward non-constant volatility by maximising variance of
+        # the GARCH sigma trajectory computed on clean (non-NaN) returns.
+        lr = small_data["log_returns"]
+        lr_clean = lr[~jnp.isnan(lr)]
+        sigma_trajectory = garch(lr_clean)
+        sigma_variance_penalty = -0.01 * jnp.var(sigma_trajectory)
+
         predicted = _run_model(spde, garch, small_data, noise_key)
         target = small_data["close_target"]
         n = min(predicted.shape[0], target.shape[0])
@@ -128,7 +136,7 @@ def fit(
             _MAX_RESIDUAL_MAGNITUDE,
         )
         mse = jnp.mean(residuals ** 2)
-        return mse
+        return mse + sigma_variance_penalty
 
     solver = optx.BFGS(rtol=1e-5, atol=1e-5)
 
