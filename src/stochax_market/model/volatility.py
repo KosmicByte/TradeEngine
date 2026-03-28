@@ -12,9 +12,15 @@ class GARCHVolatility(eqx.Module):
 
     σ²_t = ω + α X²_{t-1} + β σ²_{t-1}
 
-    Parameters are stored in unconstrained space and transformed via softplus
-    to enforce positivity. The stationarity condition α + β < 1 is enforced
-    via a sigmoid rescaling.
+    Parameters are stored in unconstrained space and transformed via bounded
+    transforms to enforce meaningful ranges:
+      omega = softplus(raw_omega)                         → ω > 0
+      alpha = 0.05 + 0.15 * sigmoid(raw_alpha)           → α ∈ [0.05, 0.20]
+      beta  = clip(0.50 + 0.40 * sigmoid(raw_beta),
+                   max=0.999 - alpha)                     → β ∈ [0.50, 0.90]
+
+    This guarantees alpha + beta < 1 (covariance-stationarity) while
+    preventing degenerate near-zero ARCH/GARCH coefficients.
 
     Attributes:
         raw_omega: Unconstrained parameter for ω.
@@ -28,17 +34,21 @@ class GARCHVolatility(eqx.Module):
 
     def __init__(
         self,
-        raw_omega: float = 0.5,
-        raw_alpha: float = 0.3,
-        raw_beta: float = 1.5,
+        raw_omega: float = -3.0,
+        raw_alpha: float = 0.5,
+        raw_beta: float = 2.0,
     ):
         """Initialize GARCH parameters directly in unconstrained space.
 
         Stores raw (unconstrained) values that are transformed at access time:
-        omega = softplus(raw_omega), alpha = softplus(raw_alpha),
-        beta = softplus(raw_beta) * (1 - alpha - 1e-3). The stationarity
-        condition alpha + beta < 1 is additionally enforced inside __call__
-        as a safety net.
+        omega = softplus(raw_omega),
+        alpha = 0.05 + 0.15 * sigmoid(raw_alpha)  → alpha in [0.05, 0.20],
+        beta  = 0.50 + 0.40 * sigmoid(raw_beta)   → beta  in [0.50, 0.90],
+        with beta additionally clipped to keep alpha + beta < 1.
+
+        The default initialisation (raw_omega=-3, raw_alpha=0.5, raw_beta=2)
+        gives omega≈0.049, alpha≈0.12, beta≈0.85, which is a sensible
+        GARCH(1,1) starting point with strong volatility persistence.
 
         Args:
             raw_omega: Unconstrained parameter for ω (stored directly).
@@ -55,13 +65,13 @@ class GARCHVolatility(eqx.Module):
 
     @property
     def alpha(self) -> jnp.ndarray:
-        return jax.nn.softplus(self.raw_alpha)
+        return 0.05 + 0.15 * jax.nn.sigmoid(self.raw_alpha)
 
     @property
     def beta(self) -> jnp.ndarray:
-        return jax.nn.softplus(self.raw_beta) * (
-            1.0 - jax.nn.softplus(self.raw_alpha) - 1e-3
-        )
+        alpha = 0.05 + 0.15 * jax.nn.sigmoid(self.raw_alpha)
+        beta_unconstrained = 0.50 + 0.40 * jax.nn.sigmoid(self.raw_beta)
+        return jnp.minimum(beta_unconstrained, 0.999 - alpha)
 
     def __call__(self, log_returns: jnp.ndarray) -> jnp.ndarray:
         """Compute GARCH(1,1) conditional variance series.
@@ -73,20 +83,17 @@ class GARCHVolatility(eqx.Module):
             Shape (T,) array of conditional volatilities σ_t.
         """
         omega = self.omega
-        alpha_raw = self.alpha
-        beta_raw = self.beta
-
-        # Enforce stationarity: rescale so alpha + beta < 1
-        total = alpha_raw + beta_raw
-        scale = jnp.where(total >= 0.99, 0.98 / (total + 1e-8), 1.0)
-        alpha = alpha_raw * scale
-        beta = beta_raw * scale
+        alpha = self.alpha
+        beta = self.beta
 
         sigma2_init = omega / (1.0 - alpha - beta + 1e-8)
 
         def scan_fn(carry, x_t):
             sigma2_prev = carry
-            sigma2_t = omega + alpha * x_t**2 + beta * sigma2_prev
+            # Replace NaN returns (e.g. split-adjusted days) with 0 so the
+            # ARCH term does not propagate NaN through the variance path.
+            x_safe = jnp.where(jnp.isnan(x_t), 0.0, x_t)
+            sigma2_t = omega + alpha * x_safe**2 + beta * sigma2_prev
             sigma2_t = jnp.maximum(sigma2_t, 1e-8)
             return sigma2_t, sigma2_t
 

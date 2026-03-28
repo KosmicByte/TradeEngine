@@ -32,7 +32,7 @@ _C = dict(
     hlband  = "rgba(91,141,239,0.10)",
 )
 
-_LEGEND = dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5)
+_LEGEND = dict(orientation="h", yanchor="top", y=0, xanchor="center", x=0.5)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -385,8 +385,8 @@ def plot_garch_vol_fit(
     lr    = np.log(df["Close"] / df["Close"].shift(1)).dropna().values
     dates = df["Date"].iloc[-len(lr):]
 
-    sigma2 = np.array(garch(jnp.array(lr, dtype=jnp.float32)))
-    sigma_fitted  = np.sqrt(sigma2) * np.sqrt(252)
+    sigma_daily = np.array(garch(jnp.array(lr, dtype=jnp.float32)))
+    sigma_fitted  = sigma_daily * np.sqrt(252)
 
     rolling_vol = (pd.Series(lr).rolling(30).std() * np.sqrt(252)).values
 

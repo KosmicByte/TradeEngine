@@ -50,9 +50,10 @@ def make_noise_trajectory(
     nt: int,
     nx: int,
     dt: float,
-    n_modes: int = 16,
+    n_modes: int = 32,
     decay_rate: float = 2.0,
     dx: float | None = None,
+    empirical_sigma: float = 0.015,
 ) -> jnp.ndarray:
     """Generate a noise trajectory of shape (nt, nx) with √dt scaling.
 
@@ -65,9 +66,18 @@ def make_noise_trajectory(
         nt: Number of timesteps.
         nx: Number of spatial grid points.
         dt: Time step size.
-        n_modes: Number of Karhunen-Loève modes.
-        decay_rate: Power-law decay exponent for eigenvalues: λᵢ = i^{-decay_rate}.
+        n_modes: Number of Karhunen-Loève modes (default 32).
+        decay_rate: Power-law decay exponent for eigenvalues: λᵢ ∝ i^{-decay_rate}.
         dx: Spatial grid spacing. Defaults to 1.0/nx.
+        empirical_sigma: Observed daily log-return standard deviation used to
+            anchor the noise amplitude (default 0.015, ≈ RELIANCE daily vol).
+            Eigenvalues are set to ``λᵢ = (empirical_sigma / i)^{decay_rate}``,
+            which equals ``(empirical_sigma)^2 / i^2`` for the default
+            ``decay_rate=2``.  This is consistent with the formula
+            ``λᵢ = (empirical_sigma × domain_extent)² / i²`` from the SPDE
+            theory when domain_extent is normalised to 1.  Anchoring to the
+            observed vol ensures that per-step noise has the right order of
+            magnitude relative to actual price moves.
 
     Returns:
         Shape (nt, nx) noise increments √dt · W_sample per timestep.
@@ -76,7 +86,9 @@ def make_noise_trajectory(
         dx = 1.0 / nx
 
     modes = jnp.arange(1, n_modes + 1, dtype=jnp.float32)
-    eigenvalues = modes ** (-decay_rate)
+    # Scale eigenvalues using empirical log-return std so noise amplitude is
+    # anchored to observed market data rather than an arbitrary decay curve.
+    eigenvalues = (empirical_sigma / modes) ** decay_rate
 
     def _step(carry_key: jax.Array, _: None) -> tuple[jax.Array, jnp.ndarray]:
         carry_key, subkey = jax.random.split(carry_key)

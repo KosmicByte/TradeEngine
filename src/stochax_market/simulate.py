@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from stochax_market.calibration.loss import field_mean
 from stochax_market.data.features import encode_features
 from stochax_market.data.loader import load_stock
+from stochax_market.model.initial import make_initial_condition
 from stochax_market.model.noise import make_noise_trajectory
 from stochax_market.model.spde import SPDEStepper
 from stochax_market.model.volatility import GARCHVolatility
@@ -46,7 +47,7 @@ def simulate(
     spde = SPDEStepper(nx=nx)
     garch = GARCHVolatility()
 
-    sigma_series = garch(features["log_returns"][:nt])
+    sigma_series = garch(features["log_returns"][-nt:])
     sigma_fields = jax.vmap(GARCHVolatility.to_spatial_field, in_axes=(0, None))(
         sigma_series, nx
     )
@@ -54,8 +55,14 @@ def simulate(
     key, noise_key = jax.random.split(key)
     noise = make_noise_trajectory(noise_key, nt, nx, spde.dt)
 
+    # Build the starting condition from the last known closing price so that
+    # the simulation begins at the current price level, not the oldest one.
+    L = features.get("L", features.get("price_scale", 1.0))
+    last_price = float(df["Close"].iloc[-1])
+    u0_start = make_initial_condition(last_price, domain_extent=L, nx=nx)
+
     trajectory = spde.rollout(
-        features["u0"][0], sigma_fields, noise, features["drift"][:nt], nt
+        u0_start, sigma_fields, noise, features["drift"][-nt:], nt
     )
 
     x_grid = jnp.linspace(0.0, spde.domain_extent, nx, dtype=jnp.float32)

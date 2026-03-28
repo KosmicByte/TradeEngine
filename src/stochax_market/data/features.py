@@ -78,8 +78,18 @@ def encode_features(df: pd.DataFrame, nx: int = 128) -> dict:
 
     # ------------------------------------------------------------------ #
     # Log returns and drift                                               #
+    # Split/bonus-issue events produce single-day returns of ±50–70 %,  #
+    # which corrupt GARCH calibration.  Any |log_return| > 0.25 is      #
+    # almost certainly a corporate action, not a real price move.        #
+    # Replace those days with 0.0 so GARCH sees a zero-return (neutral) #
+    # and the SPDE drift term also receives a safe finite value.         #
+    # Using 0.0 (not NaN) keeps all downstream arrays NaN-free and      #
+    # prevents NaN propagation through SPDEStepper.step().               #
     # ------------------------------------------------------------------ #
+    _SPLIT_THRESHOLD = 0.25
     log_returns = np.log(close / prev_close).astype(np.float32)
+    split_mask = np.abs(log_returns) > _SPLIT_THRESHOLD
+    log_returns[split_mask] = 0.0
 
     # ------------------------------------------------------------------ #
     # Seasonal features: day-of-year encoded as (sin, cos) pair           #

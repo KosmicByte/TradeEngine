@@ -65,7 +65,8 @@ class TestSPDEStepper:
         u0 = price_to_field(0.5, 1.0, nx)
         sigma_traj = jnp.ones((nt, nx), dtype=jnp.float32) * 0.5
         key = jax.random.key(0)
-        noise_traj = make_noise_trajectory(key, nt, nx, spde.dt)
+        # Pass explicit empirical_sigma so the test is independent of defaults.
+        noise_traj = make_noise_trajectory(key, nt, nx, spde.dt, empirical_sigma=1.0)
         drift_series = jnp.zeros(nt, dtype=jnp.float32)
 
         trajectory = spde.rollout(u0, sigma_traj, noise_traj, drift_series, nt)
