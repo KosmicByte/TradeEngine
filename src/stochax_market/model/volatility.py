@@ -28,11 +28,16 @@ class GARCHVolatility(eqx.Module):
 
     def __init__(
         self,
-        omega: float = 0.01,
-        alpha: float = 0.05,
-        beta: float = 0.90,
+        omega: float = 0.1,
+        alpha: float = 0.1,
+        beta: float = 0.8,
     ):
         """Initialize GARCH parameters.
+
+        Defaults (ω=0.1, α=0.1, β=0.8) satisfy the stationarity condition
+        α + β = 0.9 < 1 and produce a non-trivial long-run variance of
+        ω / (1 − α − β) = 1.0, ensuring physically-meaningful volatility
+        before any calibration step.
 
         Args:
             omega: Base variance (ω > 0).

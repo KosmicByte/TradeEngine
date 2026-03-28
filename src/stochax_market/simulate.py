@@ -61,7 +61,7 @@ def simulate(
     x_grid = jnp.linspace(0.0, spde.domain_extent, nx, dtype=jnp.float32)
     predicted = jax.vmap(field_mean, in_axes=(0, None))(trajectory, x_grid)
 
-    price_scale = features.get("price_scale", 1.0)
+    price_scale = features.get("L", features.get("price_scale", 1.0))
     predicted_prices = predicted * price_scale
 
     if output_path is None:

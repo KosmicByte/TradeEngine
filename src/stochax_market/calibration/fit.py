@@ -113,7 +113,7 @@ def fit(
         )
         predicted = _run_model(spde, garch, small_data, noise_key)
         target = small_data["close_target"]
-        n = jnp.minimum(predicted.shape[0], target.shape[0])
+        n = min(predicted.shape[0], target.shape[0])
         mse = jnp.mean((predicted[:n] - target[:n]) ** 2)
         return mse
 
