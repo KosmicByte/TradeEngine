@@ -38,7 +38,10 @@ def encode_features(df: pd.DataFrame, nx: int = 128) -> dict:
         - ``dates`` (T,): Date values from the ``Date`` column.
         - ``seasonal`` (T, 2): ``[sin, cos]`` of day-of-year seasonality.
         - ``price_scale`` (float): Scalar to recover original prices from
-          normalised values.
+          normalised values. Equals ``L``.
+        - ``L`` (float): Spatial domain length = ``max(High)`` across the
+          full dataset.  Use ``predicted_price = field_mean * L`` to
+          denormalise model outputs.
 
     Raises:
         ValueError: If any required column is missing from *df*.
@@ -59,16 +62,19 @@ def encode_features(df: pd.DataFrame, nx: int = 128) -> dict:
     # ------------------------------------------------------------------ #
     # Price normalisation: scale all prices to [0, 1] so they fit within  #
     # the SPDE domain [0, domain_extent=1].                               #
+    #                                                                      #
+    # L is the spatial domain length, anchored to the full-dataset High   #
+    # maximum so that the domain is stable across fit / simulate / predict #
+    # calls and is not accidentally recomputed from a data batch.          #
     # ------------------------------------------------------------------ #
-    price_scale = float(
-        np.max(np.abs(np.concatenate([close, prev_close, high, low, vwap]))) + 1e-8
-    )
+    L = float(np.max(high))
+    price_scale = L  # kept for backward compatibility
 
-    close_norm = (close / price_scale).astype(np.float32)
-    prev_close_norm = (prev_close / price_scale).astype(np.float32)
-    high_norm = (high / price_scale).astype(np.float32)
-    low_norm = (low / price_scale).astype(np.float32)
-    vwap_norm = (vwap / price_scale).astype(np.float32)
+    close_norm = (close / L).astype(np.float32)
+    prev_close_norm = (prev_close / L).astype(np.float32)
+    high_norm = (high / L).astype(np.float32)
+    low_norm = (low / L).astype(np.float32)
+    vwap_norm = (vwap / L).astype(np.float32)
 
     # ------------------------------------------------------------------ #
     # Log returns and drift                                               #
@@ -90,6 +96,8 @@ def encode_features(df: pd.DataFrame, nx: int = 128) -> dict:
 
     # ------------------------------------------------------------------ #
     # Initial conditions: Gaussian blob centred at normalised Prev Close   #
+    # Prices are normalised to [0, 1] (divided by L), so the grid domain  #
+    # passed to price_to_field is L=1.0 (the unit-normalised interval).   #
     # ------------------------------------------------------------------ #
     u0 = jnp.stack(
         [price_to_field(float(p), L=1.0, nx=nx) for p in prev_close_norm]
@@ -112,5 +120,6 @@ def encode_features(df: pd.DataFrame, nx: int = 128) -> dict:
         "price_range": price_range,
         "dates": dates,
         "seasonal": jnp.array(seasonal, dtype=jnp.float32),
+        "L": L,
         "price_scale": price_scale,
     }

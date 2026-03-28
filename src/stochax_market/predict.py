@@ -46,10 +46,20 @@ def predict(
 
     if params_path is not None and Path(params_path).exists():
         with open(params_path, "rb") as f:
-            spde, garch = pickle.load(f)
+            saved = pickle.load(f)
+        if len(saved) == 3:
+            spde, garch, L = saved
+        else:
+            spde, garch = saved
+            L = None
     else:
         spde = SPDEStepper(nx=nx)
         garch = GARCHVolatility()
+        L = None
+
+    # Fall back to the L computed from the current dataset
+    if L is None:
+        L = features.get("L", features.get("price_scale", 1.0))
 
     log_returns = features["log_returns"]
     sigma_series = garch(log_returns)
@@ -57,8 +67,6 @@ def predict(
     last_u = features["u0"][-1]
     last_sigma = sigma_series[-1]
     last_drift = features["drift"][-1]
-
-    price_scale = features.get("price_scale", 1.0)
 
     def _single_forecast(key: jax.Array) -> jnp.ndarray:
         sigma_fields = jax.vmap(GARCHVolatility.to_spatial_field, in_axes=(0, None))(
@@ -71,7 +79,7 @@ def predict(
 
         x_grid = jnp.linspace(0.0, spde.domain_extent, nx, dtype=jnp.float32)
         prices = jax.vmap(field_mean, in_axes=(0, None))(traj, x_grid)
-        return prices * price_scale
+        return prices * L
 
     keys = jax.random.split(jax.random.key(seed), n_samples)
     all_samples = jax.vmap(_single_forecast)(keys)  # (n_samples, horizon)
