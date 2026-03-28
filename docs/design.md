@@ -74,7 +74,7 @@ observed Close/VWAP prices.
 
 All trainable parameters are stored in Equinox modules:
 
-- **SPDEStepper**: `raw_kappa`, `raw_mu_scale` (constrained via softplus)
+- **SPDEStepper**: `raw_mu_scale` (constrained via softplus; `kappa` is a fixed hyperparameter passed as a concrete `float` to exponax at construction time and frozen inside `diffusion_stepper`)
 - **GARCHVolatility**: `raw_omega`, `raw_alpha`, `raw_beta` (softplus + rescaling)
 
 This design ensures:
