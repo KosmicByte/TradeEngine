@@ -82,6 +82,8 @@ def fit_main(
         table.add_row(str(k), str(v))
     table.add_row("Output file", output)
     console.print(table)
+    if "final_loss" in info:
+        console.print(f"[bold yellow]Final loss: {info['final_loss']:.6f}[/bold yellow]")
     console.print("[bold green]✓ Calibration complete[/bold green]")
 
 

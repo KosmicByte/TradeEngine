@@ -14,6 +14,13 @@ from stochax_market.model.noise import make_noise_trajectory
 from stochax_market.model.spde import SPDEStepper
 from stochax_market.model.volatility import GARCHVolatility
 
+# Maximum number of BFGS optimisation steps for calibration.
+_MAX_CALIBRATION_STEPS: int = 1000
+
+# Residuals larger than this magnitude are clipped to prevent NaN from
+# stiff SPDE steps propagating into the BFGS gradient update.
+_MAX_RESIDUAL_MAGNITUDE: float = 100.0
+
 
 def _run_model(
     spde: SPDEStepper,
@@ -114,7 +121,13 @@ def fit(
         predicted = _run_model(spde, garch, small_data, noise_key)
         target = small_data["close_target"]
         n = min(predicted.shape[0], target.shape[0])
-        mse = jnp.mean((predicted[:n] - target[:n]) ** 2)
+        # Clip residuals to prevent NaN from stiff SPDE steps
+        residuals = jnp.clip(
+            predicted[:n] - target[:n],
+            -_MAX_RESIDUAL_MAGNITUDE,
+            _MAX_RESIDUAL_MAGNITUDE,
+        )
+        mse = jnp.mean(residuals ** 2)
         return mse
 
     solver = optx.BFGS(rtol=1e-5, atol=1e-5)
@@ -125,10 +138,11 @@ def fit(
             solver,
             y0,
             args=key,
-            max_steps=n_steps,
+            max_steps=_MAX_CALIBRATION_STEPS,
             throw=False,
         )
         y_opt = sol.value
+        final_loss = float(loss_fn(y_opt, key))
 
         # Reconstruct fitted models
         fitted_spde = eqx.tree_at(
@@ -140,8 +154,9 @@ def fit(
             (y_opt[1], y_opt[2], y_opt[3]),
         )
         result_info = {
-            "steps": n_steps,
+            "steps": _MAX_CALIBRATION_STEPS,
             "result": str(sol.result),
+            "final_loss": final_loss,
         }
     except Exception as e:
         # Fallback: return initial params if optimization fails
