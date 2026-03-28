@@ -26,7 +26,7 @@ def price_to_field(
     """
     x = jnp.linspace(0.0, L, nx, dtype=jnp.float32)
     u0 = jnp.exp(-((x - price) ** 2) / (2.0 * width**2))
-    dx = L / (nx - 1 + 1e-8)
+    dx = L / max(nx - 1, 1)
     integral = jnp.sum(u0) * dx
     u0 = u0 / (integral + 1e-8)
     return u0

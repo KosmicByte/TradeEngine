@@ -21,7 +21,7 @@ simulate_app = typer.Typer(name="stochax-simulate", add_completion=False)
 def simulate_main(
     symbol: str = typer.Option("RELIANCE", "--symbol", "-s", help="Stock symbol"),
     steps: int = typer.Option(252, "--steps", "-n", help="Number of timesteps"),
-    output: str = typer.Option(None, "--output", "-o", help="Output CSV path"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Output CSV path"),
     seed: int = typer.Option(42, "--seed", help="Random seed"),
 ):
     """Run SPDE simulation for a NIFTY50 stock."""
