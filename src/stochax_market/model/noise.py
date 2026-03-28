@@ -61,6 +61,12 @@ def make_noise_trajectory(
     distinct subkey derived from the previous one, guaranteeing independent
     noise increments per step.
 
+    Eigenvalues are scaled to the normalised field magnitude (1/nx) so that
+    per-step noise increments are commensurate with the field values produced
+    by make_initial_condition. Without this scaling, noise increments are
+    O(empirical_sigma²) ≈ 2e-4, far below the field magnitude O(1/nx) ≈ 8e-3,
+    making the stochastic term invisible.
+
     Args:
         key: JAX random key (first positional argument).
         nt: Number of timesteps.
@@ -71,13 +77,9 @@ def make_noise_trajectory(
         dx: Spatial grid spacing. Defaults to 1.0/nx.
         empirical_sigma: Observed daily log-return standard deviation used to
             anchor the noise amplitude (default 0.015, ≈ RELIANCE daily vol).
-            Eigenvalues are set to ``λᵢ = (empirical_sigma / i)^{decay_rate}``,
-            which equals ``(empirical_sigma)^2 / i^2`` for the default
-            ``decay_rate=2``.  This is consistent with the formula
-            ``λᵢ = (empirical_sigma × domain_extent)² / i²`` from the SPDE
-            theory when domain_extent is normalised to 1.  Anchoring to the
-            observed vol ensures that per-step noise has the right order of
-            magnitude relative to actual price moves.
+            Eigenvalues are scaled to field magnitude (1/nx) so that the noise
+            term is commensurate with actual field values, then modulated by
+            empirical_sigma / i^decay_rate to preserve the frequency decay.
 
     Returns:
         Shape (nt, nx) noise increments √dt · W_sample per timestep.
@@ -86,9 +88,12 @@ def make_noise_trajectory(
         dx = 1.0 / nx
 
     modes = jnp.arange(1, n_modes + 1, dtype=jnp.float32)
-    # Scale eigenvalues using empirical log-return std so noise amplitude is
-    # anchored to observed market data rather than an arbitrary decay curve.
-    eigenvalues = (empirical_sigma / modes) ** decay_rate
+
+    # Scale eigenvalues to normalised field magnitude (1/nx) so noise
+    # increments are commensurate with field values from make_initial_condition.
+    # Factor (1/nx) / empirical_sigma converts from log-return scale to field scale.
+    field_scale = (1.0 / nx) / empirical_sigma
+    eigenvalues = (field_scale * empirical_sigma / modes) ** decay_rate
 
     def _step(carry_key: jax.Array, _: None) -> tuple[jax.Array, jnp.ndarray]:
         carry_key, subkey = jax.random.split(carry_key)

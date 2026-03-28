@@ -47,6 +47,36 @@ def _save(fig: go.Figure, path: Path) -> None:
 def _subtitle(text: str) -> str:
     return f"<br><span style='font-size:15px;font-weight:normal;'>{text}</span>"
 
+def _load_params(params_path: Path) -> dict:
+    """
+    Normalise params.pkl into a canonical dict regardless of serialisation
+    format used by fit.py.
+
+    Supported formats
+    -----------------
+    - dict  : already canonical, returned as-is
+    - tuple of length 3 : (SPDEStepper, GARCHVolatility, L:float)
+    """
+    with open(params_path, "rb") as f:
+        raw = pickle.load(f)
+
+    if isinstance(raw, dict):
+        return raw
+
+    if isinstance(raw, tuple) and len(raw) == 3:
+        spde, garch, L = raw
+        return {
+            "spde":  spde,
+            "garch": garch,
+            "L":     float(L),
+        }
+
+    raise TypeError(
+        f"params.pkl has unrecognised structure: "
+        f"type={type(raw)}, "
+        f"len={len(raw) if hasattr(raw, '__len__') else 'N/A'}. "
+        "Update _load_params() in visualize.py."
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Public plot functions
@@ -378,10 +408,9 @@ def plot_garch_vol_fit(
     import jax.numpy as jnp
     from stochax_market.model.volatility import GARCHVolatility
 
-    with open(params_path, "rb") as f:
-        saved = pickle.load(f)
-
+    saved = _load_params(params_path)
     garch: GARCHVolatility = saved["garch"]
+
     lr    = np.log(df["Close"] / df["Close"].shift(1)).dropna().values
     dates = df["Date"].iloc[-len(lr):]
 
@@ -482,9 +511,9 @@ def run_all(
 
         result      = predict(symbol=symbol, horizon=horizon,
                               params_path=params_path, seed=seed)
-        print(type(result))
-        print(result.keys() if isinstance(result, dict) else dir(result))
-        print(result)
+        # print(type(result))
+        # print(result.keys() if isinstance(result, dict) else dir(result))
+        # print(result)
 
         last_date   = df["Date"].iloc[-1]
         pred_dates  = pd.bdate_range(last_date, periods=horizon + 1)[1:]

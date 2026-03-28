@@ -65,4 +65,13 @@ def calibration_loss(
     else:
         sign_mismatch = jnp.float32(0.0)
 
-    return mse + 0.1 * sign_mismatch
+    # Flat-volatility penalty: approaches 1.0 when sigma is constant,
+    # approaches 0.0 when sigma is dynamic — always bounded [0, 1]
+    sigma = params.get("sigma_trajectory", None)
+    flat_vol_penalty = (
+        0.1 * jnp.exp(-100.0 * jnp.var(sigma))
+        if sigma is not None
+        else jnp.float32(0.0)
+    )
+
+    return mse + 0.1 * sign_mismatch + flat_vol_penalty
