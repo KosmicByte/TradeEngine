@@ -64,15 +64,16 @@ def fit(
 ) -> tuple[SPDEStepper, GARCHVolatility, dict[str, Any]]:
     """Fit SPDE + GARCH parameters using Optimistix BFGS minimizer.
 
-    Constructs a pure loss function and uses optimistix.minimise with BFGS
-    to fit parameters {κ, μ_scale, ω, α, β} to the dataset.
+    Extracts trainable float parameters (mu_scale, omega, alpha, beta) into
+    a flat array, keeping non-differentiable components (exponax stepper)
+    frozen. Uses optimistix.minimise with BFGS.
 
     Args:
         model_spde: Initial SPDE stepper module.
         model_garch: Initial GARCH volatility module.
         data: Encoded feature dict from encode_features().
         n_steps: Maximum optimization steps.
-        lr: Learning rate (used as step size for BFGS).
+        lr: Learning rate (unused, BFGS uses line search).
         key: JAX random key. If None, uses key(0).
 
     Returns:
@@ -81,15 +82,35 @@ def fit(
     if key is None:
         key = jax.random.key(0)
 
-    params = (model_spde, model_garch)
-
     # Limit data size for tractable optimization
     max_T = min(data["log_returns"].shape[0], 50)
-    small_data = {k: v[:max_T] if hasattr(v, 'shape') and len(v.shape) > 0 else v for k, v in data.items()}
+    small_data = {
+        k: v[:max_T] if hasattr(v, "shape") and len(v.shape) > 0 else v
+        for k, v in data.items()
+    }
 
-    def loss_fn(params, args):
-        spde, garch = params
+    # Extract trainable parameters as a flat array to avoid
+    # differentiating through exponax's non-differentiable stepper
+    y0 = jnp.array([
+        model_spde.raw_mu_scale,
+        model_garch.raw_omega,
+        model_garch.raw_alpha,
+        model_garch.raw_beta,
+    ], dtype=jnp.float32)
+
+    # Frozen model templates for reconstruction
+    frozen_spde = model_spde
+    frozen_garch = model_garch
+
+    def loss_fn(y, args):
         noise_key = args
+        # Reconstruct models from flat parameter array
+        spde = eqx.tree_at(lambda s: s.raw_mu_scale, frozen_spde, y[0])
+        garch = eqx.tree_at(
+            lambda g: (g.raw_omega, g.raw_alpha, g.raw_beta),
+            frozen_garch,
+            (y[1], y[2], y[3]),
+        )
         predicted = _run_model(spde, garch, small_data, noise_key)
         target = small_data["close_target"]
         n = jnp.minimum(predicted.shape[0], target.shape[0])
@@ -102,12 +123,22 @@ def fit(
         sol = optx.minimise(
             loss_fn,
             solver,
-            params,
+            y0,
             args=key,
             max_steps=n_steps,
             throw=False,
         )
-        fitted_spde, fitted_garch = sol.value
+        y_opt = sol.value
+
+        # Reconstruct fitted models
+        fitted_spde = eqx.tree_at(
+            lambda s: s.raw_mu_scale, model_spde, y_opt[0]
+        )
+        fitted_garch = eqx.tree_at(
+            lambda g: (g.raw_omega, g.raw_alpha, g.raw_beta),
+            model_garch,
+            (y_opt[1], y_opt[2], y_opt[3]),
+        )
         result_info = {
             "steps": n_steps,
             "result": str(sol.result),
