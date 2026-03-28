@@ -73,8 +73,17 @@ def fit_main(
 
     fitted_spde, fitted_garch, info = fit(spde, garch, features, n_steps=n_steps, key=key)
 
+    L = float(features["L"])
     with open(output, "wb") as f:
-        pickle.dump((fitted_spde, fitted_garch, features["L"]), f)
+        pickle.dump(
+            {
+                "spde":      fitted_spde,
+                "garch":     fitted_garch,
+                "L":         L,
+                "loss_info": info,
+            },
+            f,
+        )
 
     table = Table(title=f"Calibration Results: {symbol}")
     table.add_column("Metric", style="cyan")
