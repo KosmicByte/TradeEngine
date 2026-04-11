@@ -47,15 +47,15 @@ def predict(
     if params_path is not None and Path(params_path).exists():
         with open(params_path, "rb") as f:
             saved = pickle.load(f)
-        if len(saved) == 3:
+        if isinstance(saved, dict):
+            spde = saved["spde"]
+            garch = saved["garch"]
+            L = float(saved["L"])
+        elif len(saved) == 3:
             spde, garch, L = saved
         else:
             spde, garch = saved
             L = None
-    else:
-        spde = SPDEStepper(nx=nx)
-        garch = GARCHVolatility()
-        L = None
 
     # Fall back to the L computed from the current dataset
     if L is None:

@@ -4,36 +4,44 @@ from __future__ import annotations
 
 import math
 import pickle
+import shutil
 import subprocess
 import warnings
 from pathlib import Path
 from typing import Any
 
-# Loss value below which calibration is considered converged.
-_CONVERGENCE_LOSS_THRESHOLD = 1e6
 
+def _fmt(val: Any, spec: str = ".4f", fallback: str = "not recorded") -> str:
+    """Format a numeric or string value safely for LaTeX.
 
-def _fmt(value: Any, precision: int = 4) -> str:
-    """Format a numeric value for LaTeX output.
+    Returns fallback string if val is None, NaN, inf, or unformattable.
+    Truncates long strings to 80 characters to prevent LaTeX table overflow.
 
-    Returns ``\\text{undefined}`` for NaN/inf values, scientific notation for
-    very small numbers, and fixed-point with *precision* decimal places otherwise.
+    Args:
+        val:      Value to format (numeric or str).
+        spec:     Python format spec for numeric values (default ".4f").
+        fallback: String returned when val cannot be formatted.
+
+    Returns:
+        LaTeX-safe formatted string.
     """
+    if val is None:
+        return fallback
+    if isinstance(val, str):
+        if "RESULTS<" in val:
+            try:
+                inner = val.split("<", 1)[1].rstrip(">")
+                val = inner.split(".")[0].strip()
+            except (IndexError, AttributeError):
+                pass
+        return val[:80]
     try:
-        v = float(value)
+        v = float(val)
+        if v != v or abs(v) == float("inf"):
+            return fallback
+        return format(v, spec)
     except (TypeError, ValueError):
-        return r"\text{undefined}"
-
-    if math.isnan(v) or math.isinf(v):
-        return r"\text{undefined}"
-
-    if v != 0.0 and abs(v) < 1e-3:
-        # Scientific notation for small values
-        exp = int(math.floor(math.log10(abs(v))))
-        mantissa = v / (10 ** exp)
-        return f"{mantissa:.{precision}f} \\times 10^{{{exp}}}"
-
-    return f"{v:.{precision}f}"
+        return fallback
 
 
 def _safe_sqrt(v: float) -> str:
@@ -47,7 +55,7 @@ def _safe_sqrt(v: float) -> str:
     return _fmt(math.sqrt(v))
 
 
-def _build_latex(
+def _generate_latex(
     symbol: str,
     spde: Any,
     garch: Any,
@@ -62,7 +70,8 @@ def _build_latex(
         garch: Fitted :class:`~stochax_market.model.volatility.GARCHVolatility`
             instance.
         L: Domain extent (from features or spde.domain_extent).
-        loss_info: Dict with optional keys ``final_loss`` and ``steps``.
+        loss_info: Dict with optional keys ``final_loss``, ``steps``, and
+            ``result``.
 
     Returns:
         Complete LaTeX document as a string.
@@ -70,40 +79,44 @@ def _build_latex(
     # ------------------------------------------------------------------ #
     # Extract parameters via property accessors                           #
     # ------------------------------------------------------------------ #
-    domain_L = float(spde.domain_extent)
     dt = float(spde.dt)
     nx = int(spde.nx)
-    dx = domain_L / nx
+    dx = L / nx
 
-    mu_scale = _fmt(float(spde.mu_scale))
-    raw_mu_scale = _fmt(float(spde.raw_mu_scale))
+    mu_scale = float(spde.mu_scale)
+    raw_mu_scale = float(spde.raw_mu_scale)
 
-    omega = _fmt(float(garch.omega))
-    alpha = _fmt(float(garch.alpha))
-    beta = _fmt(float(garch.beta))
-    raw_omega = _fmt(float(garch.raw_omega))
+    omega = float(garch.omega)
+    alpha = float(garch.alpha)
+    beta = float(garch.beta)
+    persistence = alpha + beta
 
-    persistence_val = float(garch.alpha) + float(garch.beta)
-    persistence = _fmt(persistence_val)
+    # Unconditional vol: sqrt(omega / (1 - alpha - beta))
+    # Guard: denominator may be <= 0 if persistence >= 1.
+    # Use 1e-6 tolerance to handle floating-point values numerically close to 1.
+    denom = 1.0 - persistence
+    if denom > 1e-6:
+        uncond_vol = (omega / denom) ** 0.5
+    else:
+        uncond_vol = float("inf")   # _fmt will render as "not recorded"
 
-    denom = 1.0 - persistence_val
-    uncond_var = float(garch.omega) / denom if denom > 0 else float("nan")
-    uncond_vol = _safe_sqrt(uncond_var)
+    omega_str       = _fmt(omega,       ".4f")
+    alpha_str       = _fmt(alpha,       ".4f")
+    beta_str        = _fmt(beta,        ".4f")
+    raw_omega_str   = _fmt(float(garch.raw_omega), ".4f")
+    persistence_str = _fmt(persistence, ".4f")
+    uncond_vol_str  = _fmt(uncond_vol,  ".4f")
 
-    final_loss = loss_info.get("final_loss")
-    opt_steps = loss_info.get("steps")
+    mu_scale_str     = _fmt(mu_scale,     ".6f")
+    raw_mu_scale_str = _fmt(raw_mu_scale, ".4f")
 
-    loss_str = _fmt(final_loss) if final_loss is not None else r"\text{N/A}"
-    steps_str = str(int(opt_steps)) if opt_steps is not None else "N/A"
-    converged = (
-        "Converged"
-        if (final_loss is not None and float(final_loss) < _CONVERGENCE_LOSS_THRESHOLD)
-        else "Unknown"
-    )
+    domain_L_str = _fmt(L,  ".4f")
+    dt_str       = _fmt(dt, ".4f")
+    dx_str       = _fmt(dx, ".4f")
 
-    domain_L_str = _fmt(domain_L)
-    dt_str = _fmt(dt)
-    dx_str = _fmt(dx)
+    loss_str   = _fmt(loss_info.get("final_loss"), ".6g")
+    steps_str  = _fmt(loss_info.get("steps"),      ".0f")
+    converged  = _fmt(loss_info.get("result"),     fallback="not recorded")
 
     # ------------------------------------------------------------------ #
     # Build LaTeX source                                                  #
@@ -178,12 +191,12 @@ where $X_t$ are log-returns. The spatial field is constructed as:
 \toprule
 Parameter & Symbol & Fitted Value \\
 \midrule
-Baseline variance & $\omega$ & ${omega}$ (raw: ${raw_omega}$) \\
-ARCH coefficient  & $\alpha$ & ${alpha}$ (constrained: $[0.05,\,0.20]$) \\
-GARCH coefficient & $\beta$  & ${beta}$ (constrained: $[0.50,\,0.90]$) \\
+Baseline variance & $\omega$ & ${omega_str}$ (raw: ${raw_omega_str}$) \\
+ARCH coefficient  & $\alpha$ & ${alpha_str}$ (constrained: $[0.05,\,0.20]$) \\
+GARCH coefficient & $\beta$  & ${beta_str}$ (constrained: $[0.50,\,0.90]$) \\
 \midrule
-Persistence       & $\alpha + \beta$ & ${persistence}$ \\
-Unconditional vol & $\sqrt{{\omega/(1-\alpha-\beta)}}$ & ${uncond_vol}$ \\
+Persistence       & $\alpha + \beta$ & ${persistence_str}$ \\
+Unconditional vol & $\sqrt{{\omega/(1-\alpha-\beta)}}$ & ${uncond_vol_str}$ \\
 \bottomrule
 \end{{tabular}}
 \caption{{GARCH(1,1) fitted parameters. Raw values refer to unconstrained
@@ -191,7 +204,7 @@ space before softplus/sigmoid transforms.}}
 \end{{table}}
 
 \subsection{{Stationarity Condition}}
-The model is covariance-stationary since $\alpha + \beta = {persistence} < 1$.
+The model is covariance-stationary since $\alpha + \beta = {persistence_str} < 1$.
 
 % ============================================================
 \section{{Drift Specification}}
@@ -203,8 +216,8 @@ The drift term is:
 
 \subsection{{Estimated Drift Parameter}}
 \begin{{itemize}}
-  \item $\mu_{{\text{{scale}}}} = {mu_scale}$ (transformed from
-        $\text{{raw\_mu\_scale}} = {raw_mu_scale}$ via softplus)
+  \item $\mu_{{\text{{scale}}}} = {mu_scale_str}$ (transformed from
+        $\text{{raw\_mu\_scale}} = {raw_mu_scale_str}$ via softplus)
 \end{{itemize}}
 
 % ============================================================
@@ -249,16 +262,16 @@ This is computed via trapezoidal quadrature on the grid $\{{x_i\}}_{{i=1}}^{{n_x
 \midrule
 \multicolumn{{3}}{{l}}{{\textit{{SPDE}}}} \\
 & $\kappa$ (diffusion) & 0.01 \\
-& $\mu_{{\text{{scale}}}}$ (drift) & {mu_scale} \\
+& $\mu_{{\text{{scale}}}}$ (drift) & {mu_scale_str} \\
 & $L$ (domain extent) & {domain_L_str} INR \\
 & $n_x$ (grid points) & {nx} \\
 & $\Delta t$ (time step) & 1/252 \\
 \midrule
 \multicolumn{{3}}{{l}}{{\textit{{GARCH(1,1)}}}} \\
-& $\omega$ & {omega} \\
-& $\alpha$ & {alpha} \\
-& $\beta$ & {beta} \\
-& $\alpha + \beta$ & {persistence} \\
+& $\omega$ & {omega_str} \\
+& $\alpha$ & {alpha_str} \\
+& $\beta$ & {beta_str} \\
+& $\alpha + \beta$ & {persistence_str} \\
 \midrule
 \multicolumn{{3}}{{l}}{{\textit{{Noise (KL expansion)}}}} \\
 & modes & 32 \\
@@ -275,6 +288,48 @@ This is computed via trapezoidal quadrature on the grid $\{{x_i\}}_{{i=1}}^{{n_x
 \end{{document}}
 """
     return doc
+
+
+# Backward-compatible alias
+_build_latex = _generate_latex
+
+
+def _load_params(params_path: str | Path) -> tuple:
+    """Load and unpack a ``params.pkl`` file.
+
+    Supports both the legacy tuple format ``(spde, garch, L)`` and the
+    dict format ``{"spde": ..., "garch": ..., "L": ..., "loss_info": ...}``.
+
+    Args:
+        params_path: Path to ``params.pkl``.
+
+    Returns:
+        Tuple ``(spde, garch, L, loss_info)`` where ``loss_info`` is always
+        a dict (empty when not stored).
+
+    Raises:
+        TypeError: If the format is not recognised.
+    """
+    params_path = Path(params_path)
+    with open(params_path, "rb") as fh:
+        data = pickle.load(fh)
+
+    if isinstance(data, tuple):
+        spde, garch, L = data
+        loss_info: dict = {}
+    elif isinstance(data, dict) and "spde" in data and "garch" in data:
+        spde = data["spde"]
+        garch = data["garch"]
+        L = data["L"]
+        loss_info = data.get("loss_info") or {}
+    else:
+        raise TypeError(
+            f"Unrecognised params.pkl format: expected tuple or dict, got {type(data)!r}. "
+            "Supported formats: (spde, garch, L) tuple or "
+            "{'spde': ..., 'garch': ..., 'L': ..., 'loss_info': ...} dict."
+        )
+
+    return spde, garch, float(L), loss_info
 
 
 def export_model_pdf(
@@ -311,28 +366,12 @@ def export_model_pdf(
     # ------------------------------------------------------------------ #
     # Load params.pkl                                                     #
     # ------------------------------------------------------------------ #
-    with open(params_path, "rb") as fh:
-        data = pickle.load(fh)
-
-    if isinstance(data, tuple):
-        spde, garch, L = data
-        loss_info: dict = {}
-    elif isinstance(data, dict):
-        spde = data["spde"]
-        garch = data["garch"]
-        L = data["L"]
-        loss_info = data.get("loss_info", {})
-    else:
-        raise TypeError(
-            f"Unrecognised params.pkl format: expected tuple or dict, got {type(data)!r}. "
-            "Supported formats: (spde, garch, L) tuple or "
-            "{'spde': ..., 'garch': ..., 'L': ..., 'loss_info': ...} dict."
-        )
+    spde, garch, L, loss_info = _load_params(params_path)
 
     # ------------------------------------------------------------------ #
     # Generate LaTeX source                                               #
     # ------------------------------------------------------------------ #
-    latex_source = _build_latex(symbol, spde, garch, float(L), loss_info)
+    latex_source = _generate_latex(symbol, spde, garch, L, loss_info)
 
     tex_path.write_text(latex_source, encoding="utf-8")
     print(f"[✓] LaTeX source written to {tex_path}")
@@ -340,15 +379,7 @@ def export_model_pdf(
     # ------------------------------------------------------------------ #
     # Compile with pdflatex                                               #
     # ------------------------------------------------------------------ #
-    try:
-        result = subprocess.run(
-            ["pdflatex", "--version"],
-            capture_output=True,
-            check=False,
-        )
-        pdflatex_available = result.returncode == 0
-    except FileNotFoundError:
-        pdflatex_available = False
+    pdflatex_available = shutil.which("pdflatex") is not None
 
     if not pdflatex_available:
         warnings.warn(
