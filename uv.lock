@@ -1368,7 +1368,6 @@ source = { editable = "." }
 dependencies = [
     { name = "equinox" },
     { name = "exponax" },
-    { name = "jax" },
     { name = "jaxlib" },
     { name = "kagglehub" },
     { name = "kaleido" },
@@ -1396,7 +1395,6 @@ dev = [
 requires-dist = [
     { name = "equinox", specifier = ">=0.11.0" },
     { name = "exponax", specifier = ">=0.1.0" },
-    { name = "jax", specifier = ">=0.4.25" },
     { name = "jaxlib", specifier = ">=0.4.25" },
     { name = "kagglehub", specifier = ">=0.2.0" },
     { name = "kaleido", specifier = ">=1.2.0" },
