@@ -9,7 +9,6 @@ authors = [
   { name = "Aditya Mishra", email = "mishraraghav36@gmail.com" },
 ]
 dependencies = [
-  "jax>=0.4.25",
   "jaxlib>=0.4.25",
   "equinox>=0.11.0",
   "exponax>=0.1.0",
