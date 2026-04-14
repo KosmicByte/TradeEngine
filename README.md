@@ -1,24 +1,85 @@
-# TradeEngine 
+# stochax-market
 
-### Run anything in the terminal of pycharm !!. 
+Stochastic PDE-based stock market simulation, calibration, and prediction using JAX.
 
-## Routine to follow for every new session: 
- 
-0. Check if you are in the devel branch. If not, switch to the devel branch using:
-```bash
-git checkout devel
-```
-1. Each time after opening the project in pycharm, update the project from UI (or git pull) to get the latest changes. 
-2. Open in-built terminal in pycharm and run the following command to snc the package dependencies:
+## Overview
 
-NOTE: Do this once as I have changed the python version to 3.11.x:
-```bash 
-uv sync --python 3.11
-```
+`stochax-market` implements a GARCH-diffusion SPDE model for simulating and predicting
+NIFTY50 stock prices. The model extends Geometric Brownian Motion (GBM) with:
 
-Generally, you can just run:
+- **Stochastic volatility** via GARCH(1,1) diffusion
+- **Spatial PDE structure** solved with pseudo-spectral methods (exponax)
+- **Differentiable calibration** using Optimistix solvers
+- **JAX-native** computation with JIT, vmap, and grad support
+
+## Installation
+
 ```bash
 uv sync
-``` 
-3. After finishing working in the project, update the WH.md file with the hours worked. 
-4. Commit the changes and push to the remote repository (devel - branch).
+```
+
+## Quick Start
+
+### Simulate a stock trajectory
+
+```bash
+stochax-simulate --symbol RELIANCE --steps 10
+```
+
+### Calibrate model parameters
+
+```bash
+stochax-fit --symbol RELIANCE --n-steps 5 --output params.pkl
+```
+
+### Predict future prices
+
+```bash
+stochax-predict --symbol RELIANCE --horizon 3 --params params.pkl
+```
+
+#### Visualize results
+
+```bash
+
+# Minimum — historical + log-returns + volatility only
+stochax-visualize --symbol RELIANCE --out-dir plots/
+
+# With simulation overlay
+stochax-visualize --symbol RELIANCE \
+  --sim-csv RELIANCE_sim.csv \
+  --out-dir plots/
+
+# Full suite — all 6 plots including prediction + GARCH fit
+stochax-visualize --symbol RELIANCE \
+  --sim-csv RELIANCE_sim.csv \
+  --params params.pkl \
+  --horizon 21 \
+  --recent-n 60 \
+  --out-dir plots/
+
+```
+## Project Structure
+
+```
+src/stochax_market/
+├── data/          # Dataset loading and feature engineering
+├── model/         # SPDE stepper, GARCH volatility, noise, initial conditions
+├── calibration/   # Loss functions and Optimistix-based fitting
+├── simulate.py    # Forward simulation entrypoint
+├── predict.py     # Forecasting entrypoint
+└── cli.py         # Typer CLI commands
+```
+
+## Documentation
+
+- [Model Derivation](docs/model.md)
+- [Architecture Design](docs/design.md)
+- [Problem Statement](docs/problem.md)
+- [API Reference](docs/api.md)
+
+## Testing
+
+```bash
+pytest tests/
+```

@@ -1,68 +1,52 @@
 [project]
-name = "tradeengine"
+name = "stochax-market"
 version = "0.1.0"
-description = "A comprehensive trading engine with backend services and ML integrations."
+description = "Stochastic PDE-based stock market simulation, calibration, and prediction using JAX."
 readme = "README.md"
-requires-python = "==3.11.*"
+requires-python = ">=3.11"
 authors = [
   { name = "Abhinav Mishra", email = "mishraabhinav36@gmail.com" },
-  { name = "Aditya Mishra", email = "mishraraghav36@gmail.com" }
+  { name = "Aditya Mishra", email = "mishraraghav36@gmail.com" },
 ]
 dependencies = [
-  "fastapi==0.110.3",
-  "uvicorn==0.30.6",
-  "pydantic==2.11.7",
-  "requests[socks]==2.32.4",
-  "numpy==1.26.4",
-  "pandas==2.3.1",
-  "matplotlib==3.10.5",
-  "beautifulsoup4==4.13.4",
-  "textblob==0.18.0.post0",
-  "tweepy==4.16.0",
-  "upstox-python-sdk==2.17.0",
-  "gym==0.26.2",
-  "stable-baselines3==2.7.0",
-  "optuna==3.6.2",
-  "onnx==1.18.0",
-  "onnxruntime==1.22.1",
-  "shap==0.45.1",
-  "papermill==2.6.0",
-  "nbformat==5.10.4",
-  "reportlab==4.4.3",
-  "dvc==3.61.0",
-  "python-multipart==0.0.9",
-  "python-dotenv==1.1.1",
-  "ta>=0.11,<0.12",
-  "nsepython>=2.97",
-  "snakeviz>=2.2.2",
-  "snakemake>=7.32.4",
-  "pytz>=2025.2",
-  "playwright>=1.55.0",
-  "curl-cffi>=0.13.0",
-  "nsetools>=2.0.1",
-  "bharat-sm-data>=4.0.1",
+  "jaxlib>=0.4.25",
+  "equinox>=0.11.0",
+  "exponax>=0.1.0",
+  "optimistix>=0.0.8",
+  "lineax>=0.0.6",
+  "kagglehub>=0.2.0",
+  "pandas>=2.0.0",
+  "numpy>=1.26.0",
+  "typer>=0.12.0",
+  "rich>=13.0.0",
+  "matplotlib>=3.8.0",
+  "plotly>=6.6.0",
+  "kaleido>=1.2.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest==8.2.1",
-  "black==24.3.0",
-  "flake8==7.0.0",
-  "mypy==1.10.0",
-  "isort==5.13.2",
-  "pre-commit==3.6.2",
-  "jupyter==1.0.0",
-  "notebook==7.2.0",
-  "streamlit==1.35.0",
-  "locust==2.24.0"
+  "pytest>=8.0.0",
 ]
+
+[project.scripts]
+stochax-simulate = "stochax_market.cli:simulate_app"
+stochax-fit = "stochax_market.cli:fit_app"
+stochax-predict = "stochax_market.cli:predict_app"
+stochax-visualize  = "stochax_market.cli:visualize_app"
+stochax-export = "stochax_market.cli:export_app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tradesystem"]
+packages = ["src/stochax_market"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/tradesystem", "pyproject.toml", "README.md", "LICENSE", "NOTICE"]
+include = ["src/stochax_market", "pyproject.toml", "README.md"]
+
+[tool.uv]
+dev-dependencies = [
+  "pytest>=8.0.0",
+]
