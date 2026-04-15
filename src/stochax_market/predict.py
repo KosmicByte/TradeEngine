@@ -16,6 +16,8 @@ from stochax_market.model.noise import make_noise_trajectory
 from stochax_market.model.spde import PIDController, SPDEStepper
 from stochax_market.model.volatility import GARCHVolatility
 
+from stochax_market.debug import display_jaxpr
+
 
 def predict(
     symbol: str,
@@ -91,6 +93,8 @@ def predict(
 
     keys = jax.random.split(jax.random.key(seed), n_samples)
     all_samples = jax.vmap(_single_forecast)(keys)  # (n_samples, horizon)
+
+    print(display_jaxpr(_single_forecast, keys[0]))
 
     mean_pred = jnp.mean(all_samples, axis=0)
     lower_ci = jnp.percentile(all_samples, 5.0, axis=0)

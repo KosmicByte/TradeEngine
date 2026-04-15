@@ -78,7 +78,8 @@ def fit(
     n_steps: int = 100,
     lr: float = 1e-3,
     key: jax.Array | None = None,
-) -> tuple[SPDEStepper, GARCHVolatility, PIDController, dict[str, Any]]:
+) -> tuple[SPDEStepper | Any, GARCHVolatility | Any, PIDController | None | Any, dict[str, int | str | float] | dict[
+    str, int | str]]:
     """Fit SPDE + GARCH + PID parameters using Optimistix BFGS minimizer.
 
     Args:

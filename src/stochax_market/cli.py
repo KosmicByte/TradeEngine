@@ -10,6 +10,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from stochax_market.debug import display_module
+
 console = Console()
 
 # --- simulate CLI ---
@@ -72,6 +74,10 @@ def fit_main(
 
     spde = SPDEStepper()
     garch = GARCHVolatility()
+
+    print(display_module(spde))
+    print(display_module(garch))
+
     pid = PIDController(Kp=kp, Ki=ki, Kd=kd)
     key = jax.random.key(seed)
 
