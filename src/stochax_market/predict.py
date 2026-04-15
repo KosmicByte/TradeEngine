@@ -16,7 +16,7 @@ from stochax_market.model.noise import make_noise_trajectory
 from stochax_market.model.spde import PIDController, SPDEStepper
 from stochax_market.model.volatility import GARCHVolatility
 
-from stochax_market.debug import display_jaxpr
+from stochax_market.debug import display_jaxpr, export_computation_graph
 
 
 def predict(
@@ -94,7 +94,25 @@ def predict(
     keys = jax.random.split(jax.random.key(seed), n_samples)
     all_samples = jax.vmap(_single_forecast)(keys)  # (n_samples, horizon)
 
-    print(display_jaxpr(_single_forecast, keys[0]))
+    closed = jax.make_jaxpr(_single_forecast)(keys[0])
+
+    with open("graph.html", "w") as f:
+        f.write(export_computation_graph(closed, format="html"))
+
+    with open("graph.dot", "w") as f:
+        f.write(export_computation_graph(closed, format="dot"))
+
+    with open("graph.txt", "w") as f:
+        f.write(export_computation_graph(closed, format="text"))
+
+    # print("Dot Format:")
+    # print(export_computation_graph(closed, format="dot"))  # ✅ closed, not _single_forecast
+    #
+    # print("Text Format:")
+    # print(export_computation_graph(closed, format="text"))  # ✅ closed, not _single_forecast
+
+    print("JAX Expression:")
+    print(display_jaxpr(_single_forecast, keys[0]))  # ✅ already correct
 
     mean_pred = jnp.mean(all_samples, axis=0)
     lower_ci = jnp.percentile(all_samples, 5.0, axis=0)
