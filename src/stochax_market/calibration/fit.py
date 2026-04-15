@@ -17,6 +17,15 @@ from stochax_market.model.volatility import GARCHVolatility
 _MAX_CALIBRATION_STEPS: int = 1000
 _MAX_RESIDUAL_MAGNITUDE: float = 100.0
 
+# Indices into the flat optimisation parameter vector y.
+_IDX_MU_SCALE: int = 0
+_IDX_OMEGA: int = 1
+_IDX_ALPHA: int = 2
+_IDX_BETA: int = 3
+_IDX_KP: int = 4
+_IDX_KI: int = 5
+_IDX_KD: int = 6
+
 
 def _run_model(
     spde: SPDEStepper,
@@ -48,6 +57,8 @@ def _run_model(
         sigma_series, nx
     )
     noise = make_noise_trajectory(noise_key, T, nx, spde.dt)
+    # vwap_target is always present when data comes from encode_features();
+    # fall back to close_target only for callers that supply a minimal dict.
     setpoint_series = data.get("vwap_target", data.get("close_target"))
     trajectory = spde.rollout(
         u0_series[0], sigma_fields, noise, drift, T,
@@ -112,16 +123,16 @@ def fit(
     def loss_fn(y, args):
         noise_key = args
 
-        spde = eqx.tree_at(lambda s: s.raw_mu_scale, frozen_spde, y[0])
+        spde = eqx.tree_at(lambda s: s.raw_mu_scale, frozen_spde, y[_IDX_MU_SCALE])
         garch = eqx.tree_at(
             lambda g: (g.raw_omega, g.raw_alpha, g.raw_beta),
             frozen_garch,
-            (y[1], y[2], y[3]),
+            (y[_IDX_OMEGA], y[_IDX_ALPHA], y[_IDX_BETA]),
         )
         pid = eqx.tree_at(
             lambda p: (p.raw_Kp, p.raw_Ki, p.raw_Kd),
             frozen_pid,
-            (y[4], y[5], y[6]),
+            (y[_IDX_KP], y[_IDX_KI], y[_IDX_KD]),
         )
 
         predicted = _run_model(spde, garch, small_data, noise_key, pid)
@@ -150,17 +161,17 @@ def fit(
         final_loss = float(loss_fn(y_opt, key))
 
         fitted_spde = eqx.tree_at(
-            lambda s: s.raw_mu_scale, model_spde, y_opt[0]
+            lambda s: s.raw_mu_scale, model_spde, y_opt[_IDX_MU_SCALE]
         )
         fitted_garch = eqx.tree_at(
             lambda g: (g.raw_omega, g.raw_alpha, g.raw_beta),
             model_garch,
-            (y_opt[1], y_opt[2], y_opt[3]),
+            (y_opt[_IDX_OMEGA], y_opt[_IDX_ALPHA], y_opt[_IDX_BETA]),
         )
         fitted_pid = eqx.tree_at(
             lambda p: (p.raw_Kp, p.raw_Ki, p.raw_Kd),
             model_pid,
-            (y_opt[4], y_opt[5], y_opt[6]),
+            (y_opt[_IDX_KP], y_opt[_IDX_KI], y_opt[_IDX_KD]),
         )
         result_info = {
             "steps":      _MAX_CALIBRATION_STEPS,
