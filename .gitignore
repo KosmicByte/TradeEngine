@@ -12,3 +12,6 @@ build/
 *.pkl
 *.png
 *.prof
+*.html
+*.dot
+*.txt

@@ -13,8 +13,10 @@ from stochax_market.calibration.loss import field_mean
 from stochax_market.data.features import encode_features
 from stochax_market.data.loader import load_stock
 from stochax_market.model.noise import make_noise_trajectory
-from stochax_market.model.spde import SPDEStepper
+from stochax_market.model.spde import PIDController, SPDEStepper
 from stochax_market.model.volatility import GARCHVolatility
+
+from stochax_market.debug import display_jaxpr, export_computation_graph
 
 
 def predict(
@@ -50,11 +52,14 @@ def predict(
         if isinstance(saved, dict):
             spde = saved["spde"]
             garch = saved["garch"]
+            pid = saved.get("pid", PIDController())
             L = float(saved["L"])
         elif len(saved) == 3:
             spde, garch, L = saved
+            pid = PIDController()
         else:
             spde, garch = saved
+            pid = PIDController()
             L = None
 
     # Fall back to the L computed from the current dataset
@@ -67,6 +72,7 @@ def predict(
     last_u = features["u0"][-1]
     last_sigma = sigma_series[-1]
     last_drift = features["drift"][-1]
+    last_vwap = features["vwap_target"][-1]
 
     def _single_forecast(key: jax.Array) -> jnp.ndarray:
         sigma_fields = jax.vmap(GARCHVolatility.to_spatial_field, in_axes=(0, None))(
@@ -74,8 +80,12 @@ def predict(
         )
         noise = make_noise_trajectory(key, horizon, nx, spde.dt)
         drift = jnp.full(horizon, last_drift)
+        setpoint = jnp.full(horizon, last_vwap)
 
-        traj = spde.rollout(last_u, sigma_fields, noise, drift, horizon)
+        traj = spde.rollout(
+            last_u, sigma_fields, noise, drift, horizon,
+            pid=pid, setpoint_series=setpoint,
+        )
 
         x_grid = jnp.linspace(0.0, spde.domain_extent, nx, dtype=jnp.float32)
         prices = jax.vmap(field_mean, in_axes=(0, None))(traj, x_grid)
@@ -83,6 +93,26 @@ def predict(
 
     keys = jax.random.split(jax.random.key(seed), n_samples)
     all_samples = jax.vmap(_single_forecast)(keys)  # (n_samples, horizon)
+
+    closed = jax.make_jaxpr(_single_forecast)(keys[0])
+
+    with open("graph.html", "w") as f:
+        f.write(export_computation_graph(closed, format="html"))
+
+    with open("graph.dot", "w") as f:
+        f.write(export_computation_graph(closed, format="dot"))
+
+    with open("graph.txt", "w") as f:
+        f.write(export_computation_graph(closed, format="text"))
+
+    # print("Dot Format:")
+    # print(export_computation_graph(closed, format="dot"))  # ✅ closed, not _single_forecast
+    #
+    # print("Text Format:")
+    # print(export_computation_graph(closed, format="text"))  # ✅ closed, not _single_forecast
+
+    print("JAX Expression:")
+    print(display_jaxpr(_single_forecast, keys[0]))  # ✅ already correct
 
     mean_pred = jnp.mean(all_samples, axis=0)
     lower_ci = jnp.percentile(all_samples, 5.0, axis=0)
