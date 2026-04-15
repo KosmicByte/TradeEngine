@@ -8,7 +8,7 @@ import pytest
 
 from stochax_market.model.initial import price_to_field
 from stochax_market.model.noise import make_noise_trajectory, make_wiener_sample
-from stochax_market.model.spde import SPDEStepper
+from stochax_market.model.spde import PIDController, SPDEStepper
 from stochax_market.model.volatility import GARCHVolatility
 
 
@@ -174,3 +174,99 @@ class TestInitialCondition:
         dx = 1.0 / (nx - 1)
         integral = jnp.sum(u0) * dx
         assert abs(float(integral) - 1.0) < 0.1
+
+
+class TestPIDController:
+    """Tests for PIDController."""
+
+    def test_gains_positive(self):
+        """Kp, Ki, Kd are positive after softplus transform."""
+        pid = PIDController(Kp=0.1, Ki=0.01, Kd=0.001)
+        assert float(pid.Kp) > 0.0
+        assert float(pid.Ki) > 0.0
+        assert float(pid.Kd) > 0.0
+
+    def test_output_scalar(self):
+        """PID __call__ returns a scalar correction and updated carry."""
+        pid = PIDController()
+        carry = (jnp.float32(0.0), jnp.float32(0.0))
+        u_pid, (integral, prev_error) = pid(
+            carry, jnp.float32(0.45), jnp.float32(0.5), dt=1.0 / 252.0
+        )
+        assert u_pid.shape == ()
+        assert integral.shape == ()
+        assert prev_error.shape == ()
+
+    def test_integral_antiwindup(self):
+        """Integral carry is clipped to [-i_max, i_max]."""
+        i_max = 0.5
+        pid = PIDController(Ki=10.0, i_max=i_max)
+        carry = (jnp.float32(0.0), jnp.float32(0.0))
+        dt = 1.0 / 252.0
+        # Drive a large persistent error to saturate the integral.
+        for _ in range(1000):
+            _, carry = pid(carry, jnp.float32(0.0), jnp.float32(1.0), dt=dt)
+        integral, _ = carry
+        assert float(integral) <= i_max + 1e-5
+
+    def test_differentiable(self):
+        """PID __call__ is differentiable w.r.t. raw gains via eqx.filter_grad."""
+        import equinox as eqx
+
+        pid = PIDController()
+        carry = (jnp.float32(0.0), jnp.float32(0.0))
+
+        @eqx.filter_grad
+        def grad_fn(p):
+            u_pid, _ = p(carry, jnp.float32(0.45), jnp.float32(0.5), dt=1.0 / 252.0)
+            return u_pid
+
+        grads = grad_fn(pid)
+        assert jnp.isfinite(grads.raw_Kp)
+        assert jnp.isfinite(grads.raw_Ki)
+        assert jnp.isfinite(grads.raw_Kd)
+
+    def test_rollout_with_pid_shape(self):
+        """rollout with PID produces trajectory with correct shape."""
+        nx = 32
+        nt = 10
+        spde = SPDEStepper(nx=nx)
+        pid = PIDController()
+        u0 = price_to_field(0.5, 1.0, nx)
+        sigma_traj = jnp.ones((nt, nx), dtype=jnp.float32) * 0.02
+        noise_traj = jnp.zeros((nt, nx), dtype=jnp.float32)
+        drift_series = jnp.zeros(nt, dtype=jnp.float32)
+        setpoints = jnp.full(nt, 0.5, dtype=jnp.float32)
+
+        traj = spde.rollout(
+            u0, sigma_traj, noise_traj, drift_series, nt,
+            pid=pid, setpoint_series=setpoints,
+        )
+        assert traj.shape == (nt, nx)
+
+    def test_rollout_pid_differentiable(self):
+        """rollout with PID is differentiable w.r.t. PID raw gains."""
+        import equinox as eqx
+
+        nx = 32
+        nt = 5
+        spde = SPDEStepper(nx=nx)
+        pid = PIDController()
+        u0 = price_to_field(0.5, 1.0, nx)
+        sigma_traj = jnp.ones((nt, nx), dtype=jnp.float32) * 0.02
+        noise_traj = jnp.zeros((nt, nx), dtype=jnp.float32)
+        drift_series = jnp.zeros(nt, dtype=jnp.float32)
+        setpoints = jnp.full(nt, 0.5, dtype=jnp.float32)
+
+        @eqx.filter_grad
+        def grad_fn(p):
+            traj = spde.rollout(
+                u0, sigma_traj, noise_traj, drift_series, nt,
+                pid=p, setpoint_series=setpoints,
+            )
+            return jnp.sum(traj)
+
+        grads = grad_fn(pid)
+        assert jnp.isfinite(grads.raw_Kp)
+        assert jnp.isfinite(grads.raw_Ki)
+        assert jnp.isfinite(grads.raw_Kd)

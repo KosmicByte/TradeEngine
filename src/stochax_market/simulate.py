@@ -14,18 +14,25 @@ from stochax_market.data.features import encode_features
 from stochax_market.data.loader import load_stock
 from stochax_market.model.initial import make_initial_condition
 from stochax_market.model.noise import make_noise_trajectory
-from stochax_market.model.spde import SPDEStepper
+from stochax_market.model.spde import PIDController, SPDEStepper
 from stochax_market.model.volatility import GARCHVolatility
 
 
-def _load_params(params_path: Path) -> tuple[SPDEStepper, GARCHVolatility, float]:
+def _load_params(
+    params_path: Path,
+) -> tuple[SPDEStepper, GARCHVolatility, PIDController, float]:
     """Load fitted params.pkl, handling both tuple and dict formats."""
     with open(params_path, "rb") as f:
         raw = pickle.load(f)
-    if isinstance(raw, tuple) and len(raw) == 3:
-        return raw  # (SPDEStepper, GARCHVolatility, L)
     if isinstance(raw, dict):
-        return raw["spde"], raw["garch"], float(raw["L"])
+        spde  = raw["spde"]
+        garch = raw["garch"]
+        pid   = raw.get("pid", PIDController())
+        L     = float(raw["L"])
+        return spde, garch, pid, L
+    if isinstance(raw, tuple) and len(raw) == 3:
+        spde, garch, L = raw
+        return spde, garch, PIDController(), L
     raise TypeError(f"Unrecognised params format: {type(raw)}")
 
 
@@ -60,10 +67,11 @@ def simulate(
 
     # ── Load fitted params if provided, else use defaults ─────────────────────
     if params_path is not None and Path(params_path).exists():
-        spde, garch, L = _load_params(Path(params_path))
+        spde, garch, pid, L = _load_params(Path(params_path))
     else:
         spde  = SPDEStepper(nx=nx)
         garch = GARCHVolatility()
+        pid   = PIDController()
         L     = float(features.get("L", features.get("price_scale", 1.0)))
 
     # ── Build noise and volatility fields ─────────────────────────────────────
@@ -80,7 +88,8 @@ def simulate(
     u0_start   = make_initial_condition(last_price, domain_extent=L, nx=nx)
 
     trajectory = spde.rollout(
-        u0_start, sigma_fields, noise, features["drift"][-nt:], nt
+        u0_start, sigma_fields, noise, features["drift"][-nt:], nt,
+        pid=pid, setpoint_series=features["vwap_target"][-nt:],
     )
 
     # ── Extract prices: field_mean returns normalised coordinate → scale to INR ─

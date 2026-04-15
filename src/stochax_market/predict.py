@@ -13,7 +13,7 @@ from stochax_market.calibration.loss import field_mean
 from stochax_market.data.features import encode_features
 from stochax_market.data.loader import load_stock
 from stochax_market.model.noise import make_noise_trajectory
-from stochax_market.model.spde import SPDEStepper
+from stochax_market.model.spde import PIDController, SPDEStepper
 from stochax_market.model.volatility import GARCHVolatility
 
 
@@ -50,11 +50,14 @@ def predict(
         if isinstance(saved, dict):
             spde = saved["spde"]
             garch = saved["garch"]
+            pid = saved.get("pid", PIDController())
             L = float(saved["L"])
         elif len(saved) == 3:
             spde, garch, L = saved
+            pid = PIDController()
         else:
             spde, garch = saved
+            pid = PIDController()
             L = None
 
     # Fall back to the L computed from the current dataset
@@ -67,6 +70,7 @@ def predict(
     last_u = features["u0"][-1]
     last_sigma = sigma_series[-1]
     last_drift = features["drift"][-1]
+    last_vwap = features["vwap_target"][-1]
 
     def _single_forecast(key: jax.Array) -> jnp.ndarray:
         sigma_fields = jax.vmap(GARCHVolatility.to_spatial_field, in_axes=(0, None))(
@@ -74,8 +78,12 @@ def predict(
         )
         noise = make_noise_trajectory(key, horizon, nx, spde.dt)
         drift = jnp.full(horizon, last_drift)
+        setpoint = jnp.full(horizon, last_vwap)
 
-        traj = spde.rollout(last_u, sigma_fields, noise, drift, horizon)
+        traj = spde.rollout(
+            last_u, sigma_fields, noise, drift, horizon,
+            pid=pid, setpoint_series=setpoint,
+        )
 
         x_grid = jnp.linspace(0.0, spde.domain_extent, nx, dtype=jnp.float32)
         prices = jax.vmap(field_mean, in_axes=(0, None))(traj, x_grid)

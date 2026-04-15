@@ -52,14 +52,17 @@ def fit_main(
     n_steps: int = typer.Option(100, "--n-steps", "-n", help="Optimization steps"),
     output: str = typer.Option("params.pkl", "--output", "-o", help="Output params path"),
     seed: int = typer.Option(42, "--seed", help="Random seed"),
+    kp: float = typer.Option(0.1, "--kp", help="PID proportional gain (initial)"),
+    ki: float = typer.Option(0.01, "--ki", help="PID integral gain (initial)"),
+    kd: float = typer.Option(0.001, "--kd", help="PID derivative gain (initial)"),
 ):
-    """Calibrate SPDE + GARCH parameters for a NIFTY50 stock."""
+    """Calibrate SPDE + GARCH + PID parameters for a NIFTY50 stock."""
     import jax
 
     from stochax_market.calibration.fit import fit
     from stochax_market.data.features import encode_features
     from stochax_market.data.loader import load_stock
-    from stochax_market.model.spde import SPDEStepper
+    from stochax_market.model.spde import PIDController, SPDEStepper
     from stochax_market.model.volatility import GARCHVolatility
 
     console.print(f"[bold blue]Fitting {symbol} ({n_steps} steps)...[/bold blue]")
@@ -69,9 +72,12 @@ def fit_main(
 
     spde = SPDEStepper()
     garch = GARCHVolatility()
+    pid = PIDController(Kp=kp, Ki=ki, Kd=kd)
     key = jax.random.key(seed)
 
-    fitted_spde, fitted_garch, info = fit(spde, garch, features, n_steps=n_steps, key=key)
+    fitted_spde, fitted_garch, fitted_pid, info = fit(
+        spde, garch, features, model_pid=pid, n_steps=n_steps, key=key
+    )
 
     L = float(features["L"])
     with open(output, "wb") as f:
@@ -79,6 +85,7 @@ def fit_main(
             {
                 "spde":      fitted_spde,
                 "garch":     fitted_garch,
+                "pid":       fitted_pid,
                 "L":         L,
                 "loss_info": info,
             },
