@@ -1,4 +1,4 @@
-"""Optimistix-based parameter fitting for SPDE + GARCH model."""
+"""Optimistix-based parameter fitting for SPDE + GARCH + PID model."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import optimistix as optx
 
 from stochax_market.calibration.loss import field_mean
 from stochax_market.model.noise import make_noise_trajectory
-from stochax_market.model.spde import SPDEStepper
+from stochax_market.model.spde import PIDController, SPDEStepper
 from stochax_market.model.volatility import GARCHVolatility
 
 _MAX_CALIBRATION_STEPS: int = 1000
@@ -23,6 +23,7 @@ def _run_model(
     garch: GARCHVolatility,
     data: dict[str, jnp.ndarray],
     noise_key: jax.Array,
+    pid: PIDController | None = None,
 ) -> jnp.ndarray:
     """Run the SPDE model forward and extract predicted prices.
 
@@ -31,6 +32,7 @@ def _run_model(
         garch: GARCH volatility module.
         data: Encoded feature dict.
         noise_key: JAX random key.
+        pid: Optional PID controller; uses VWAP as setpoint when provided.
 
     Returns:
         Shape (T,) predicted prices (field means at each timestep).
@@ -46,7 +48,11 @@ def _run_model(
         sigma_series, nx
     )
     noise = make_noise_trajectory(noise_key, T, nx, spde.dt)
-    trajectory = spde.rollout(u0_series[0], sigma_fields, noise, drift, T)
+    setpoint_series = data.get("vwap_target", data.get("close_target"))
+    trajectory = spde.rollout(
+        u0_series[0], sigma_fields, noise, drift, T,
+        pid=pid, setpoint_series=setpoint_series,
+    )
     x_grid = jnp.linspace(0.0, spde.domain_extent, nx, dtype=jnp.float32)
     predicted = jax.vmap(field_mean, in_axes=(0, None))(trajectory, x_grid)
 
@@ -57,25 +63,31 @@ def fit(
     model_spde: SPDEStepper,
     model_garch: GARCHVolatility,
     data: dict[str, jnp.ndarray],
+    model_pid: PIDController | None = None,
     n_steps: int = 100,
     lr: float = 1e-3,
     key: jax.Array | None = None,
-) -> tuple[SPDEStepper, GARCHVolatility, dict[str, Any]]:
-    """Fit SPDE + GARCH parameters using Optimistix BFGS minimizer.
+) -> tuple[SPDEStepper, GARCHVolatility, PIDController, dict[str, Any]]:
+    """Fit SPDE + GARCH + PID parameters using Optimistix BFGS minimizer.
 
     Args:
         model_spde: Initial SPDE stepper module.
         model_garch: Initial GARCH volatility module.
         data: Encoded feature dict from encode_features().
+        model_pid: Initial PID controller.  If ``None`` a default
+            :class:`PIDController` is created.
         n_steps: Maximum optimization steps.
         lr: Learning rate (unused, BFGS uses line search).
         key: JAX random key. If None, uses key(0).
 
     Returns:
-        Tuple of (fitted_spde, fitted_garch, loss_history_dict).
+        Tuple of (fitted_spde, fitted_garch, fitted_pid, loss_history_dict).
     """
     if key is None:
         key = jax.random.key(0)
+
+    if model_pid is None:
+        model_pid = PIDController()
 
     max_T = min(data["log_returns"].shape[0], 50)
     small_data = {
@@ -88,10 +100,14 @@ def fit(
         model_garch.raw_omega,
         model_garch.raw_alpha,
         model_garch.raw_beta,
+        model_pid.raw_Kp,
+        model_pid.raw_Ki,
+        model_pid.raw_Kd,
     ], dtype=jnp.float32)
 
     frozen_spde  = model_spde
     frozen_garch = model_garch
+    frozen_pid   = model_pid
 
     def loss_fn(y, args):
         noise_key = args
@@ -102,8 +118,13 @@ def fit(
             frozen_garch,
             (y[1], y[2], y[3]),
         )
+        pid = eqx.tree_at(
+            lambda p: (p.raw_Kp, p.raw_Ki, p.raw_Kd),
+            frozen_pid,
+            (y[4], y[5], y[6]),
+        )
 
-        predicted = _run_model(spde, garch, small_data, noise_key)
+        predicted = _run_model(spde, garch, small_data, noise_key, pid)
         target    = small_data["close_target"]
         n         = min(predicted.shape[0], target.shape[0])
 
@@ -136,6 +157,11 @@ def fit(
             model_garch,
             (y_opt[1], y_opt[2], y_opt[3]),
         )
+        fitted_pid = eqx.tree_at(
+            lambda p: (p.raw_Kp, p.raw_Ki, p.raw_Kd),
+            model_pid,
+            (y_opt[4], y_opt[5], y_opt[6]),
+        )
         result_info = {
             "steps":      _MAX_CALIBRATION_STEPS,
             "result":     str(sol.result),
@@ -144,6 +170,7 @@ def fit(
     except Exception as e:
         fitted_spde  = model_spde
         fitted_garch = model_garch
+        fitted_pid   = model_pid
         result_info  = {"steps": 0, "error": str(e)}
 
-    return fitted_spde, fitted_garch, result_info
+    return fitted_spde, fitted_garch, fitted_pid, result_info
