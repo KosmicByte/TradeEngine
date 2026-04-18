@@ -58,6 +58,7 @@ def simulate(
 
     key = jax.random.key(seed)
 
+
     # ── Load fitted params if provided, else use defaults ─────────────────────
     if params_path is not None and Path(params_path).exists():
         spde, garch, L = _load_params(Path(params_path))
@@ -76,8 +77,13 @@ def simulate(
     noise = make_noise_trajectory(noise_key, nt, nx, spde.dt)
 
     # ── Initial condition anchored at last known price ─────────────────────────
+
+
     last_price = float(df["Close"].iloc[-1])
-    u0_start   = make_initial_condition(last_price, domain_extent=L, nx=nx)
+    u0_start = make_initial_condition(last_price, domain_extent=L, nx=nx)
+    ##u0_start= make_initial_condition(last_price / L, domain_extent=1.0, nx=nx)
+    print(f"DEBUG: L={L}, last_price={last_price}, last_price/L={last_price / L}")
+    print(f"DEBUG: spde.domain_extent={spde.domain_extent}")
 
     trajectory = spde.rollout(
         u0_start, sigma_fields, noise, features["drift"][-nt:], nt
@@ -85,6 +91,7 @@ def simulate(
 
     # ── Extract prices: field_mean returns normalised coordinate → scale to INR ─
     x_grid    = jnp.linspace(0.0, spde.domain_extent, nx, dtype=jnp.float32)
+    print(f"DEBUG: field_mean(u0)={field_mean(u0_start, x_grid)}, scaled={field_mean(u0_start, x_grid) * L}")
     predicted = jax.vmap(field_mean, in_axes=(0, None))(trajectory, x_grid)
     # field_mean returns value in [0, domain_extent]; multiply once by L for INR
     predicted_prices = predicted * L

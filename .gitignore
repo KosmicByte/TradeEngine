@@ -13,3 +13,7 @@ build/
 *.pkl
 *.png
 *.prof
+.idea/
+plots/
+.idea/
+plots/
