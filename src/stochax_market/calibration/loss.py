@@ -19,16 +19,7 @@ def field_mean(u: jnp.ndarray, x_grid: jnp.ndarray) -> jnp.ndarray:
         Scalar expected value (first moment of the field).
     """
     dx = x_grid[1] - x_grid[0]
-
-    """Added  
-    mass = jnp.sum(u) * dx
-    return jnp.sum(x_grid * u) * dx / (mass + 1e-8) to compute the center of mass (∫ x·u dx / ∫ u dx)
-    instead of assuming ∫ u dx = 1. Now even if the field gains or loses mass during rollout,
-    the extracted price will still reflect where the peak is on the grid.
-       """
-
-    mass = jnp.sum(u) * dx
-    return jnp.sum(x_grid * u) * dx / (mass + 1e-8)
+    return jnp.sum(x_grid * u) * dx
 
 
 def calibration_loss(
