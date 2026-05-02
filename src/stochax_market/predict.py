@@ -40,6 +40,11 @@ def predict(
 
     Returns:
         Dict with keys: mean_prediction, lower_ci, upper_ci, all_samples.
+
+    Notes
+    -----
+    Two forecasting bugs were patched in this version. Their previous (buggy)
+    forms are preserved in the docstring of `_single_forecast` below.
     """
     df = load_stock(symbol)
     features = encode_features(df, nx=nx)
@@ -64,16 +69,81 @@ def predict(
     log_returns = features["log_returns"]
     sigma_series = garch(log_returns)
 
-    last_u = features["u0"][-1]
+    last_u     = features["u0"][-1]
     last_sigma = sigma_series[-1]
-    last_drift = features["drift"][-1]
+    last_eps   = log_returns[-1]                  # last innovation; seeds the GARCH forecast
+    mean_drift = jnp.mean(features["drift"])      # long-run drift baseline
+
+    # Previously (buggy):
+    #     last_drift = features["drift"][-1]
+    # See _single_forecast docstring for the rationale.
 
     def _single_forecast(key: jax.Array) -> jnp.ndarray:
-        sigma_fields = jax.vmap(GARCHVolatility.to_spatial_field, in_axes=(0, None))(
-            jnp.full(horizon, last_sigma), nx
-        )
-        noise = make_noise_trajectory(key, horizon, nx, spde.dt)
-        drift = jnp.full(horizon, last_drift)
+        """Roll forward one Monte Carlo path of length `horizon`.
+
+        Patches applied
+        ---------------
+
+        Bug 1 — Frozen volatility (the GARCH dynamics never fired):
+
+            # OLD (buggy):
+            sigma_fields = jax.vmap(
+                GARCHVolatility.to_spatial_field, in_axes=(0, None)
+            )(jnp.full(horizon, last_sigma), nx)
+
+        `last_sigma` was held constant for every step of the forecast, so the
+        fitted GARCH(1,1) coefficients (α=0.1445, β=0.8280) had no effect on
+        the forward path — the whole point of the volatility model was lost.
+        We now iterate the GARCH recursion forward stochastically, sampling a
+        fresh innovation ε_t ~ N(0, σ²_t) at each step and propagating
+        σ²_{t+1} = ω + α ε²_t + β σ²_t. Each Monte Carlo sample now carries
+        its own σ trajectory, so the 5/95 CI band fans out with horizon as it
+        physically should.
+
+        Bug 2 — Constant drift (the directional collapse):
+
+            # OLD (buggy):
+            drift = jnp.full(horizon, last_drift)
+
+        `last_drift` was the log-return on the final historical day — a single
+        noisy point. Broadcasting it across the whole horizon baked that one
+        tick in as a permanent directional bias, producing the flat-to-monotonic
+        predicted curves observed in the April-18 RELIANCE backtest. We now
+        use the historical mean drift as the deterministic μ-component;
+        directional uncertainty is carried by the noise + volatility terms,
+        which is where it belongs in this SPDE.
+        """
+        eps_key, noise_key = jax.random.split(key)
+
+        # ── 1. GARCH(1,1) rolled forward stochastically ───────────────────
+        # Mirrors the recursion in volatility.py::GARCHVolatility.__call__,
+        # including the σ² ≥ 1e-8 floor.
+        eps_z = jax.random.normal(eps_key, (horizon,))
+
+        def garch_step(carry, z_t):
+            sigma_sq_prev, eps_prev = carry
+            sigma_sq_t = (
+                garch.omega
+                + garch.alpha * eps_prev ** 2
+                + garch.beta  * sigma_sq_prev
+            )
+            sigma_sq_t = jnp.maximum(sigma_sq_t, 1e-8)
+            sigma_t    = jnp.sqrt(sigma_sq_t)
+            eps_t      = z_t * sigma_t
+            return (sigma_sq_t, eps_t), sigma_t
+
+        init = (last_sigma ** 2, last_eps)
+        _, sigma_path = jax.lax.scan(garch_step, init, eps_z)   # (horizon,)
+
+        sigma_fields = jax.vmap(
+            GARCHVolatility.to_spatial_field, in_axes=(0, None)
+        )(sigma_path, nx)
+
+        # ── 2. Drift: long-run mean (deterministic μ component) ───────────
+        drift = jnp.full(horizon, mean_drift)
+
+        # ── 3. Spatial Q-Wiener noise (unchanged) ─────────────────────────
+        noise = make_noise_trajectory(noise_key, horizon, nx, spde.dt)
 
         traj = spde.rollout(last_u, sigma_fields, noise, drift, horizon)
 
@@ -85,8 +155,8 @@ def predict(
     all_samples = jax.vmap(_single_forecast)(keys)  # (n_samples, horizon)
 
     mean_pred = jnp.mean(all_samples, axis=0)
-    lower_ci = jnp.percentile(all_samples, 5.0, axis=0)
-    upper_ci = jnp.percentile(all_samples, 95.0, axis=0)
+    lower_ci  = jnp.percentile(all_samples, 5.0, axis=0)
+    upper_ci  = jnp.percentile(all_samples, 95.0, axis=0)
 
     return {
         "mean_prediction": mean_pred,
