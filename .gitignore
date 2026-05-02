@@ -17,3 +17,5 @@ build/
 plots/
 .idea/
 plots/
+*_sim.csv
+/*.csv
