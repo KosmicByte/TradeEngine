@@ -1,4 +1,4 @@
-"""Typer CLI for stochax-market: simulate, fit, and predict commands."""
+"""Typer CLI for stochax-market: simulate, fit, predict, merge, visualize, and export commands."""
 
 from __future__ import annotations
 
@@ -139,6 +139,52 @@ def predict_main(
     console.print(table)
     console.print("[bold green]✓ Prediction complete[/bold green]")
 
+
+# --- merge CLI ---
+
+merge_app = typer.Typer(name="stochax-merge", add_completion=False)
+
+
+@merge_app.callback(invoke_without_command=True)
+def merge_main(
+    sim_csv:    Path        = typer.Option(..., "--sim-csv",    help="Path to simulate output CSV (cols: step, predicted_price)"),
+    symbol:     str         = typer.Option(..., "--symbol", "-s", help="Stock symbol e.g. RELIANCE"),
+    start_date: str | None  = typer.Option(None, "--start-date", help="Date for forecast step 0 (YYYY-MM-DD or DD/MM/YY); defaults to next BDay after last historical date"),
+    out:        Path | None = typer.Option(None, "--out", "-o", help="Output CSV path; defaults to overwriting --sim-csv in place"),
+):
+    """Merge simulate predictions with realised actuals from V1.1.0 historical data."""
+    import pandas as pd
+
+    from stochax_market.merge import merge_predicted_with_actuals
+
+    console.print(f"[bold blue]Merging {sim_csv.name} with {symbol} actuals...[/bold blue]")
+
+    out_path = merge_predicted_with_actuals(
+        sim_csv    = sim_csv,
+        symbol     = symbol,
+        start_date = start_date,
+        out        = out,
+    )
+
+    merged    = pd.read_csv(out_path)
+    n_total   = len(merged)
+    n_filled  = int(merged["actual_price"].notna().sum())
+    n_pending = n_total - n_filled
+
+    table = Table(title=f"Merge Results: {symbol}")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value",  style="green")
+    table.add_row("Output file",      str(out_path))
+    table.add_row("Total steps",      str(n_total))
+    table.add_row("Date range",       f"{merged['date'].iloc[0]} → {merged['date'].iloc[-1]}")
+    table.add_row("Actuals filled",   str(n_filled))
+    table.add_row("Forecast-only",    str(n_pending))
+    console.print(table)
+    console.print("[bold green]✓ Merge complete[/bold green]")
+
+
+# --- visualize CLI ---
+
 visualize_app = typer.Typer()
 
 @visualize_app.command()
@@ -194,4 +240,3 @@ def latex(
 
     pdf_path = export_model_pdf(symbol, params, output)
     console.print(f"[green]✓[/green] Model exported to {pdf_path}")
-
