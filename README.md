@@ -20,8 +20,8 @@ uv sync
 
 ## Quick Start
 
-The end-to-end pipeline is **fit → simulate → merge → visualize**, with `predict`
-as an alternative ensemble path for confidence-banded forecasts.
+The end-to-end pipeline is **fit → simulate → merge → diagnose → visualize**, with
+`predict` as an alternative ensemble path for confidence-banded forecasts.
 
 ### 1. Calibrate model parameters
 
@@ -50,8 +50,8 @@ stochax-merge --sim-csv RELIANCE_sim.csv --symbol RELIANCE
 Augments the sim CSV in place with two new columns — `actual_price` (realised
 Close prices pulled from the V1.1.0 `upstox-historical` fetch) and `date`
 (business-day grid anchored at the day after the last training date) — to
-match the schema consumed by `plot_actual_vs_predicted`. Future / holiday
-steps appear as NaN.
+match the schema consumed by `plot_actual_vs_predicted` and `analyze`. Future
+or holiday steps appear as NaN.
 
 The merge step is **idempotent**: rerun it any time and it pulls in
 newly-realised actuals without leaving stale NaNs.
@@ -63,7 +63,27 @@ history" (useful for backtests):
 stochax-merge --sim-csv RELIANCE_sim.csv --symbol RELIANCE --start-date 18/04/26
 ```
 
-### 4. Predict future prices (ensemble alternative)
+### 4. Diagnose forecast quality
+
+```bash
+stochax-diagnose --symbol RELIANCE \
+  --sim-csv RELIANCE_sim.csv \
+  --params  params.pkl \
+  --out     RELIANCE_diagnostics.md
+```
+
+Runs a battery of seven diagnostic sections — forecast accuracy, directional
+performance, variance diagnostics, residual analysis, GARCH health, drift
+calibration, and calibration convergence — and emits a structured Markdown
+report. Each finding carries a status (`ok` / `warn` / `fail`) and a one-line
+diagnosis. The Variance Diagnostics section explicitly catches regressions
+of the constant-drift and frozen-volatility bugs fixed in v0.2.
+
+If `--out` is omitted, the full report streams to stdout. See
+[docs/diagnostics.md](docs/diagnostics.md) for the metric-by-metric breakdown
+of what each finding measures and how to interpret its status.
+
+### 5. Predict future prices (ensemble alternative)
 
 ```bash
 stochax-predict --symbol RELIANCE --horizon 3 --params params.pkl
@@ -75,7 +95,7 @@ bugs in the forecast path: GARCH volatility is now properly iterated forward
 (not held constant at last sigma) and drift uses the historical mean (not
 the noisy last log-return).
 
-### 5. Visualize results
+### 6. Visualize results
 
 ```bash
 # Minimum — historical + log-returns + volatility only
@@ -112,14 +132,15 @@ The visualize step produces (depending on inputs provided):
 
 ```
 src/stochax_market/
-├── data/          # Dataset loading and feature engineering
-├── model/         # SPDE stepper, GARCH volatility, noise, initial conditions
-├── calibration/   # Loss functions and Optimistix-based fitting
-├── simulate.py    # Forward simulation entrypoint
-├── predict.py     # Ensemble forecasting entrypoint (Monte Carlo + CIs)
-├── merge.py       # Joins simulate output with V1.1.0 actuals
-├── visualize.py   # Plotly diagnostic plots
-└── cli.py         # Typer CLI commands
+├── data/             # Dataset loading and feature engineering
+├── model/            # SPDE stepper, GARCH volatility, noise, initial conditions
+├── calibration/      # Loss functions and Optimistix-based fitting
+├── simulate.py       # Forward simulation entrypoint
+├── predict.py        # Ensemble forecasting entrypoint (Monte Carlo + CIs)
+├── merge.py          # Joins simulate output with V1.1.0 actuals
+├── diagnostics.py    # Forecast quality analysis and report generation
+├── visualize.py      # Plotly diagnostic plots
+└── cli.py            # Typer CLI commands
 ```
 
 ## Documentation
@@ -128,6 +149,7 @@ src/stochax_market/
 - [Architecture Design](docs/design.md)
 - [Problem Statement](docs/problem.md)
 - [API Reference](docs/api.md)
+- [Diagnostics Module](docs/diagnostics.md)
 
 ## Testing
 

@@ -1,4 +1,4 @@
-"""Typer CLI for stochax-market: simulate, fit, predict, merge, visualize, and export commands."""
+"""Typer CLI for stochax-market: simulate, fit, predict, merge, diagnose, visualize, and export commands."""
 
 from __future__ import annotations
 
@@ -181,6 +181,65 @@ def merge_main(
     table.add_row("Forecast-only",    str(n_pending))
     console.print(table)
     console.print("[bold green]✓ Merge complete[/bold green]")
+
+
+# --- diagnose CLI ---
+
+diagnose_app = typer.Typer(name="stochax-diagnose", add_completion=False)
+
+
+@diagnose_app.callback(invoke_without_command=True)
+def diagnose_main(
+    symbol:  str         = typer.Option(..., "--symbol", "-s", help="Stock symbol e.g. RELIANCE"),
+    sim_csv: Path        = typer.Option(..., "--sim-csv",      help="Merged sim CSV from stochax-merge (4 cols)"),
+    params:  Path | None = typer.Option(None, "--params", "-p", help="Optional fitted params.pkl for GARCH + calibration sections"),
+    out:     Path | None = typer.Option(None, "--out", "-o",    help="Output Markdown report path; if omitted, prints to stdout"),
+):
+    """Run V3 diagnostics and emit a Markdown report on forecast quality."""
+    from stochax_market.diagnostics import analyze
+
+    console.print(f"[bold blue]Analysing {symbol} forecast results...[/bold blue]")
+
+    report = analyze(
+        symbol      = symbol,
+        sim_csv     = sim_csv,
+        params_path = params,
+        out_md      = out,
+    )
+
+    overall       = report.overall_status()
+    overall_glyph = {"ok": "[green]✓[/green]", "warn": "[yellow]⚠[/yellow]", "fail": "[red]✗[/red]"}[overall]
+    overall_word  = {"ok": "Healthy", "warn": "Issues detected", "fail": "Significant problems"}[overall]
+
+    table = Table(title=f"Diagnostics Summary: {symbol}")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value",  style="green")
+    table.add_row("Overall",       f"{overall_glyph} {overall_word}")
+    table.add_row("Total steps",   str(report.n_total))
+    table.add_row("Realised",      str(report.n_realised))
+    table.add_row("Forecast-only", str(report.n_total - report.n_realised))
+    for k, v in report.summary.items():
+        table.add_row(k, v)
+    console.print(table)
+
+    counts = Table(title="Findings by Section", show_lines=False)
+    counts.add_column("Section",  style="bold")
+    counts.add_column("✓ ok",     justify="right", style="green")
+    counts.add_column("⚠ warn",   justify="right", style="yellow")
+    counts.add_column("✗ fail",   justify="right", style="red")
+    for section, findings in report.sections.items():
+        n_ok   = sum(1 for f in findings if f.status == "ok")
+        n_warn = sum(1 for f in findings if f.status == "warn")
+        n_fail = sum(1 for f in findings if f.status == "fail")
+        counts.add_row(section, str(n_ok), str(n_warn), str(n_fail))
+    console.print(counts)
+
+    if out is None:
+        # No output path → dump full markdown to stdout for piping / quick read.
+        console.print()
+        console.print(report.to_markdown())
+    else:
+        console.print(f"[bold green]✓[/bold green] Report written to [cyan]{out}[/cyan]")
 
 
 # --- visualize CLI ---
