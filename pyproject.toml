@@ -1,6 +1,6 @@
 [project]
 name = "stochax-market"
-version = "0.1.0"
+version = "0.2.0"
 description = "Stochastic PDE-based stock market simulation, calibration, and prediction using JAX."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,11 +30,12 @@ dev = [
 ]
 
 [project.scripts]
-stochax-simulate = "stochax_market.cli:simulate_app"
-stochax-fit = "stochax_market.cli:fit_app"
-stochax-predict = "stochax_market.cli:predict_app"
-stochax-visualize  = "stochax_market.cli:visualize_app"
-stochax-export = "stochax_market.cli:export_app"
+stochax-simulate  = "stochax_market.cli:simulate_app"
+stochax-fit       = "stochax_market.cli:fit_app"
+stochax-predict   = "stochax_market.cli:predict_app"
+stochax-merge     = "stochax_market.cli:merge_app"
+stochax-visualize = "stochax_market.cli:visualize_app"
+stochax-export    = "stochax_market.cli:export_app"
 
 [build-system]
 requires = ["hatchling"]

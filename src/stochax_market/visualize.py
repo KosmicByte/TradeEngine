@@ -78,6 +78,33 @@ def _load_params(params_path: Path) -> dict:
         "Update _load_params() in visualize.py."
     )
 
+
+def _project_business_dates(dates: pd.Series) -> pd.Series:
+    """
+    Forward-fill missing trailing dates as consecutive business days.
+
+    Use case: the merged sim CSV may have dates only for the realised window
+    (where the user has both predicted and actual values) and leave the
+    forecast-only steps blank. We extrapolate business days forward from the
+    last known date so the x-axis remains continuous.
+
+    Leading or interior NaTs are left untouched — only the trailing tail of
+    NaTs is filled. If the entire column is empty, returns it unchanged.
+    """
+    if dates.notna().sum() == 0:
+        return dates
+
+    last_known_pos = int(dates.notna().to_numpy().nonzero()[0].max())
+    n_missing      = len(dates) - 1 - last_known_pos
+    if n_missing <= 0:
+        return dates
+
+    forward = pd.bdate_range(dates.iloc[last_known_pos], periods=n_missing + 1)[1:]
+    out                      = dates.copy()
+    out.iloc[last_known_pos + 1:] = forward
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Public plot functions
 # ══════════════════════════════════════════════════════════════════════════════
@@ -286,6 +313,122 @@ def plot_sim_vs_actual(
     return out
 
 
+def plot_actual_vs_predicted(
+    sim_csv: Path,
+    symbol: str,
+    out: Path,
+) -> Path:
+    """
+    Forecast-accuracy plot: predicted price across the full forecast horizon
+    overlaid with realised actual price for the subset of steps that have
+    already happened.
+
+    The CSV is expected to be a merged file produced by joining the output of
+    `stochax-predict --symbol {SYMBOL} --horizon H --params params.pkl`
+    against actual close prices pulled from the V1.1.0 upstox-historical
+    fetcher (`./data/{SYMBOL}.csv` or equivalent).
+
+    Expected columns
+    ----------------
+    step            : 0-indexed forecast step.
+    predicted_price : Monte Carlo mean prediction for that step (in INR).
+    actual_price    : Realised close (NaN for forecast-only steps).
+    date            : Trade date (DD/MM/YY or ISO). May be partial — trailing
+                      blanks are projected forward as business days.
+
+    A vertical divider separates the realised region (actuals available) from
+    the pure-forecast region (actuals not yet known). MAPE is computed on the
+    realised window only and shown in the subtitle.
+
+    Parameters
+    ----------
+    sim_csv : Path to merged predicted+actual CSV.
+    symbol  : Stock ticker label (used in the title; the actual symbol
+              encoded by the file is implicit in `sim_csv`).
+    out     : Output PNG path.
+
+    Returns
+    -------
+    Path to saved PNG.
+    """
+    sim = pd.read_csv(sim_csv)
+
+    required = {"step", "predicted_price", "actual_price", "date"}
+    missing  = required - set(sim.columns)
+    if missing:
+        raise ValueError(
+            f"plot_actual_vs_predicted: {sim_csv} is missing columns {missing}. "
+            f"Expected schema: step, predicted_price, actual_price, date."
+        )
+
+    # Date parsing — accept DD/MM/YY (the user's spreadsheet convention) and
+    # also fall back to pandas' default parser for ISO-style dates.
+    sim["date"] = pd.to_datetime(sim["date"], dayfirst=True, errors="coerce")
+    sim["date"] = _project_business_dates(sim["date"])
+
+    has_actual = sim["actual_price"].notna()
+    n_realised = int(has_actual.sum())
+    n_total    = len(sim)
+
+    fig = go.Figure()
+
+    # Predicted (full horizon)
+    fig.add_trace(go.Scatter(
+        x=sim["date"], y=sim["predicted_price"],
+        mode="lines+markers", name="Predicted",
+        line=dict(color=_C["pred"], width=2),
+        marker=dict(size=5),
+    ))
+
+    # Actual (realised steps only)
+    fig.add_trace(go.Scatter(
+        x=sim.loc[has_actual, "date"],
+        y=sim.loc[has_actual, "actual_price"],
+        mode="lines+markers", name="Actual",
+        line=dict(color=_C["close"], width=2, dash="dash"),
+        marker=dict(size=6, symbol="diamond"),
+    ))
+
+    # Forecast-region divider (only if there is both a realised and a
+    # forecast-only segment)
+    if 0 < n_realised < n_total:
+        boundary_date = sim.loc[has_actual, "date"].iloc[-1]
+        fig.add_shape(
+            type="line",
+            x0=boundary_date, x1=boundary_date,
+            y0=0, y1=1, yref="paper",
+            line=dict(dash="dash", color="gray", width=1.5),
+        )
+        fig.add_annotation(
+            x=boundary_date, y=0.97, yref="paper",
+            text="Forecast →", showarrow=False,
+            xanchor="left", font=dict(size=11, color="gray"),
+        )
+
+    # Subtitle: MAPE on realised window if any actuals exist
+    if n_realised > 0:
+        err  = (sim.loc[has_actual, "predicted_price"]
+                - sim.loc[has_actual, "actual_price"]).abs()
+        mape = float((err / sim.loc[has_actual, "actual_price"]).mean() * 100)
+        subt = (f"{n_realised} realised · {n_total - n_realised} forecast · "
+                f"MAPE = {mape:.2f}% on realised window")
+    else:
+        subt = f"Pure forecast — {n_total} steps, no realised data yet"
+
+    fig.update_layout(
+        title=dict(text=(
+            f"{symbol}: Actual vs Predicted"
+            + _subtitle(subt)
+        )),
+        legend=_LEGEND,
+    )
+    fig.update_xaxes(title_text="Date")
+    fig.update_yaxes(title_text="Price (INR)", tickformat=",.0f")
+
+    _save(fig, out)
+    return out
+
+
 def plot_log_returns(
     df: pd.DataFrame,
     symbol: str,
@@ -467,6 +610,8 @@ def run_all(
     ----------
     symbol      : NIFTY50 stock symbol (e.g. 'RELIANCE').
     sim_csv     : Path to simulation CSV; skips sim plot if None.
+                  If the CSV contains an `actual_price` column it is also
+                  routed through plot_actual_vs_predicted.
     params_path : Path to params.pkl; skips GARCH + prediction plots if None.
     horizon     : Forecast horizon in trading days (default 21).
     recent_n    : Past days shown in prediction chart (default 60).
@@ -498,12 +643,21 @@ def run_all(
         df, symbol, out_dir / f"{symbol}_volatility.png"
     )
 
-    # 4. Simulation vs actual (if sim CSV provided)
+    # 4. Simulation vs actual + actual vs predicted (if sim CSV provided)
     if sim_csv is not None and Path(sim_csv).exists():
         saved["sim_vs_actual"] = plot_sim_vs_actual(
             df, symbol, Path(sim_csv),
             out_dir / f"{symbol}_sim_vs_actual.png"
         )
+
+        # If the CSV was already merged with actuals, also produce the
+        # forecast-accuracy view (predicted full horizon vs partial actuals).
+        sim_cols = pd.read_csv(sim_csv, nrows=0).columns
+        if "actual_price" in sim_cols:
+            saved["actual_vs_predicted"] = plot_actual_vs_predicted(
+                Path(sim_csv), symbol,
+                out_dir / f"{symbol}_actual_vs_predicted.png"
+            )
 
     # 5. Prediction + GARCH fit (if params provided)
     if params_path is not None and Path(params_path).exists():
@@ -511,9 +665,6 @@ def run_all(
 
         result      = predict(symbol=symbol, horizon=horizon,
                               params_path=params_path, seed=seed)
-        # print(type(result))
-        # print(result.keys() if isinstance(result, dict) else dir(result))
-        # print(result)
 
         last_date   = df["Date"].iloc[-1]
         pred_dates  = pd.bdate_range(last_date, periods=horizon + 1)[1:]

@@ -194,3 +194,4 @@ def latex(
 
     pdf_path = export_model_pdf(symbol, params, output)
     console.print(f"[green]✓[/green] Model exported to {pdf_path}")
+
