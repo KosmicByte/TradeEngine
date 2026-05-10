@@ -19,3 +19,7 @@ plots/
 plots/
 *_sim.csv
 /*.csv
+
+# Diagnostic reports (per-run, regenerable)
+*_diag.md
+*_diagnostics.md

@@ -1,6 +1,6 @@
 [project]
 name = "stochax-market"
-version = "0.3.0"
+version = "0.4.0"
 description = "Stochastic PDE-based stock market simulation, calibration, and prediction using JAX."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,6 @@ dependencies = [
   "exponax>=0.1.0",
   "optimistix>=0.0.8",
   "lineax>=0.0.6",
-  "kagglehub>=0.2.0",
   "pandas>=2.0.0",
   "numpy>=1.26.0",
   "typer>=0.12.0",

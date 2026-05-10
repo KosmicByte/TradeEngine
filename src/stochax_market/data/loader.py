@@ -1,104 +1,122 @@
-"""Load stock price data from local CSV files or Kaggle."""
+"""
+Loader for NIFTY50 stock data from local CSV files.
+
+Files are expected at `./data/{SYMBOL}.csv` (relative to the current
+working directory) with the V1.1.0 capitalised schema:
+
+    Date, Symbol, Series, Prev Close, Open, High, Low, Close, Volume,
+    VWAP, Turnover, Trades, Deliverable Volume, %Deliverble
+
+Date column may be tz-aware (e.g. '2026-05-08 00:00:00+05:30' as written
+by the V1.1.0 Upstox fetcher) or tz-naive ISO. The loader normalises both
+forms to tz-naive midnight timestamps. This is essential for downstream
+matching against the tz-naive business-day grids that `stochax-merge`,
+`stochax-diagnose`, and `visualize.run_all` construct via `pd.bdate_range`
+— without this normalisation, every date-keyed lookup silently returns
+NaN.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional, Union
 
 import pandas as pd
 
-# Kaggle dataset that provides per-symbol CSV files matching the expected schema:
-# Date, Prev Close, Open, High, Low, Last, Close, VWAP, Volume, Turnover, Trades,
-# Deliverable Volume, %Deliverable
-_KAGGLE_DATASET = "rohanrao/nifty50-stock-market-data"
 
-# Default local data directory: <repo-root>/data/
-# This module lives at src/stochax_market/data/loader.py, so parents[3] is the repo root.
-_DEFAULT_DATA_DIR = Path(__file__).resolve().parents[3] / "data"
+DEFAULT_DATA_DIR = Path("data")
+REQUIRED_COLUMNS = {"Date", "Close"}
 
 
-def load_stock(symbol: str, data_dir: str | Path | None = None) -> pd.DataFrame:
-    """Load historical OHLCV data for a stock symbol.
-
-    Looks for ``<SYMBOL>.csv`` in the local data directory first.  If not
-    found, downloads the NIFTY50 dataset from Kaggle via ``kagglehub`` and
-    reads the file from the cached download.
-
-    The returned DataFrame is sorted by ``Date`` ascending and has at minimum
-    the columns required by :func:`stochax_market.data.features.encode_features`:
-    ``Date``, ``Prev Close``, ``Open``, ``High``, ``Low``, ``Close``, ``VWAP``.
-
-    Args:
-        symbol: Stock ticker symbol, e.g. ``'RELIANCE'``.
-        data_dir: Directory to search for local CSV files.  Defaults to the
-            ``data/`` folder at the repository root.
-
-    Returns:
-        DataFrame sorted by Date ascending.
-
-    Raises:
-        FileNotFoundError: If the symbol cannot be found locally or on Kaggle.
+def load_stock(
+    symbol: str,
+    data_dir: Optional[Union[Path, str]] = None,
+) -> pd.DataFrame:
     """
-    data_dir = Path(data_dir) if data_dir is not None else _DEFAULT_DATA_DIR
-    local_path = data_dir / f"{symbol}.csv"
+    Load a NIFTY50 stock's historical data from a local CSV.
 
-    if local_path.exists():
-        df = pd.read_csv(local_path, parse_dates=["Date"])
-        df = df.sort_values("Date").reset_index(drop=True)
-        return df
+    Parameters
+    ----------
+    symbol   : Stock ticker (e.g. 'RELIANCE'). Resolves to
+               `{data_dir}/{symbol}.csv`.
+    data_dir : Directory containing per-symbol CSVs. Defaults to
+               `./data/` relative to the current working directory.
 
-    # Fall back to kagglehub download
-    try:
-        import kagglehub  # type: ignore[import-untyped]
+    Returns
+    -------
+    DataFrame sorted by Date ascending. The `Date` column is normalised
+    to tz-naive midnight timestamps regardless of whether the source
+    file had a timezone offset — the local calendar date as written is
+    preserved (tz-aware IST timestamps are not shifted to UTC).
 
-        dataset_path = Path(kagglehub.dataset_download(_KAGGLE_DATASET))
-        csv_path = dataset_path / f"{symbol}.csv"
-        if not csv_path.exists():
-            raise FileNotFoundError(
-                f"Symbol '{symbol}' not found in Kaggle dataset at {dataset_path}. "
-                f"Available files: {[p.stem for p in dataset_path.glob('*.csv')]}"
-            )
-        df = pd.read_csv(csv_path, parse_dates=["Date"])
-        df = df.sort_values("Date").reset_index(drop=True)
-        return df
-    except ImportError as exc:
-        raise FileNotFoundError(
-            f"Could not load data for '{symbol}': '{local_path}' does not exist "
-            f"and 'kagglehub' is not installed."
-        ) from exc
-    except FileNotFoundError:
-        raise
-    except Exception as exc:
-        raise FileNotFoundError(
-            f"Could not load data for '{symbol}'. "
-            f"Place '{symbol}.csv' in '{data_dir}' or configure Kaggle credentials. "
-            f"Original error: {exc}"
-        ) from exc
-
-
-def list_stocks(data_dir: str | Path | None = None) -> list[str]:
-    """List available stock symbols.
-
-    Returns symbols found in the local data directory.  If the local directory
-    does not exist or is empty, falls back to listing symbols in the Kaggle
-    dataset cache (downloading if necessary).
-
-    Args:
-        data_dir: Directory to search for local CSV files.  Defaults to the
-            ``data/`` folder at the repository root.
-
-    Returns:
-        Sorted list of symbol strings (without the ``.csv`` extension).
+    Raises
+    ------
+    FileNotFoundError
+        If `{data_dir}/{symbol}.csv` does not exist. The error includes
+        the absolute path that was checked, so the remedy is obvious
+        from the traceback.
+    ValueError
+        If the loaded DataFrame is missing required columns.
     """
-    data_dir = Path(data_dir) if data_dir is not None else _DEFAULT_DATA_DIR
+    base = Path(data_dir) if data_dir is not None else DEFAULT_DATA_DIR
+    path = base / f"{symbol}.csv"
 
-    local_csvs = sorted(p.stem for p in data_dir.glob("*.csv")) if data_dir.exists() else []
-    if local_csvs:
-        return local_csvs
+    if not path.exists():
+        raise FileNotFoundError(
+            f"load_stock({symbol!r}): expected file at {path.resolve()}.\n"
+            f"Place a V1.1.0 fetcher output CSV there "
+            f"(capitalised schema: Date, Close, Open, High, Low, VWAP, ...)."
+        )
 
-    try:
-        import kagglehub  # type: ignore[import-untyped]
+    df = pd.read_csv(path)
 
-        dataset_path = Path(kagglehub.dataset_download(_KAGGLE_DATASET))
-        return sorted(p.stem for p in dataset_path.glob("*.csv"))
-    except Exception:
+    missing = REQUIRED_COLUMNS - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"{path}: missing required columns {sorted(missing)}. "
+            f"Expected V1.1.0 capitalised schema. "
+            f"Got columns: {list(df.columns)}"
+        )
+
+    # Parse and timezone-normalise the Date column.
+    #
+    # The V1.1.0 fetcher writes tz-aware IST timestamps like
+    # '2026-05-08 00:00:00+05:30'. Pandas parses these into a tz-aware
+    # datetime64 Series. Downstream code (merge, diagnostics, visualize)
+    # builds business-day forecast grids via pd.bdate_range, which are
+    # tz-naive. A direct .map() between a tz-naive key and a tz-aware
+    # index silently returns NaN for every lookup — this is the root
+    # cause of "Actuals filled: 0" symptoms.
+    #
+    # Fix: strip the timezone if present, keeping the local calendar
+    # date as written. tz_localize(None) is correct here (not
+    # tz_convert(None) and not utc=True): we want '2026-05-08+05:30'
+    # to stay as '2026-05-08', not get shifted to '2026-05-07 18:30'.
+    parsed = pd.to_datetime(df["Date"])
+    if parsed.dt.tz is not None:
+        parsed = parsed.dt.tz_localize(None)
+    df["Date"] = parsed.dt.normalize()
+
+    df = df.sort_values("Date").reset_index(drop=True)
+    return df
+
+
+def list_stocks(
+    data_dir: Optional[Union[Path, str]] = None,
+) -> list[str]:
+    """
+    List available stock symbols based on CSV files in `data_dir`.
+
+    Parameters
+    ----------
+    data_dir : Directory containing per-symbol CSVs. Defaults to `./data/`.
+
+    Returns
+    -------
+    Alphabetically sorted list of symbol strings (CSV filename stems).
+    Returns an empty list if the directory doesn't exist.
+    """
+    base = Path(data_dir) if data_dir is not None else DEFAULT_DATA_DIR
+    if not base.exists():
         return []
+    return sorted(p.stem for p in base.glob("*.csv"))
