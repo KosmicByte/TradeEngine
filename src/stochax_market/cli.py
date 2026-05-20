@@ -24,12 +24,26 @@ def simulate_main(
     params:  Path = typer.Option(None,         help="Path to fitted params.pkl"),
     output: str | None = typer.Option(None, "--output", "-o", help="Output CSV path"),
     seed: int = typer.Option(42, "--seed", help="Random seed"),
+    drift_window: int | None = typer.Option(
+        None, "--drift-window", "-d",
+        help="Use only the last N historical timesteps for the forward-drift "
+             "mean. Useful when diagnostics flags a regime shift (e.g. recent "
+             "drift diverges from full-history mean). Try 126 (~6 months) or "
+             "252 (~1 year). Default: full history.",
+    ),
 ):
     """Run SPDE simulation for a NIFTY50 stock."""
     from stochax_market.simulate import simulate
 
     console.print(f"[bold blue]Simulating {symbol} for {steps} steps...[/bold blue]")
-    result = simulate(symbol, n_steps=steps, output_path=output, seed=seed, params_path=params)
+    result = simulate(
+        symbol,
+        n_steps      = steps,
+        output_path  = output,
+        seed         = seed,
+        params_path  = params,
+        drift_window = drift_window,
+    )
 
     table = Table(title=f"Simulation Results: {symbol}")
     table.add_column("Metric", style="cyan")
@@ -49,9 +63,23 @@ fit_app = typer.Typer(name="stochax-fit", add_completion=False)
 @fit_app.callback(invoke_without_command=True)
 def fit_main(
     symbol: str = typer.Option("RELIANCE", "--symbol", "-s", help="Stock symbol"),
-    n_steps: int = typer.Option(100, "--n-steps", "-n", help="Optimization steps"),
+    n_steps: int = typer.Option(
+        1000, "--n-steps", "-n",
+        help="BFGS optimisation steps (the cap is enforced by Optimistix; "
+             "fit may terminate earlier on convergence)",
+    ),
+    training_window: int | None = typer.Option(
+        None, "--training-window", "-w",
+        help="Restrict fitting to the last N timesteps of history. "
+             "Default: full history. The old 50-timestep silent cap is gone; "
+             "use this if you want short-window experiments.",
+    ),
     output: str = typer.Option("params.pkl", "--output", "-o", help="Output params path"),
     seed: int = typer.Option(42, "--seed", help="Random seed"),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q",
+        help="Suppress the pre-fit / post-fit diagnostic blocks.",
+    ),
 ):
     """Calibrate SPDE + GARCH parameters for a NIFTY50 stock."""
     import jax
@@ -62,7 +90,7 @@ def fit_main(
     from stochax_market.model.spde import SPDEStepper
     from stochax_market.model.volatility import GARCHVolatility
 
-    console.print(f"[bold blue]Fitting {symbol} ({n_steps} steps)...[/bold blue]")
+    console.print(f"[bold blue]Fitting {symbol} ({n_steps} BFGS steps)...[/bold blue]")
 
     df = load_stock(symbol)
     features = encode_features(df)
@@ -71,7 +99,13 @@ def fit_main(
     garch = GARCHVolatility()
     key = jax.random.key(seed)
 
-    fitted_spde, fitted_garch, info = fit(spde, garch, features, n_steps=n_steps, key=key)
+    fitted_spde, fitted_garch, info = fit(
+        spde, garch, features,
+        n_steps         = n_steps,
+        training_window = training_window,
+        key             = key,
+        verbose         = not quiet,
+    )
 
     L = float(features["L"])
     with open(output, "wb") as f:
@@ -89,7 +123,12 @@ def fit_main(
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="green")
     for k, v in info.items():
-        table.add_row(str(k), str(v))
+        # Compact float formatting for headline numbers
+        if isinstance(v, float):
+            value_str = f"{v:.6g}"
+        else:
+            value_str = str(v)
+        table.add_row(str(k), value_str)
     table.add_row("Output file", output)
     console.print(table)
     if "final_loss" in info:
@@ -109,6 +148,14 @@ def predict_main(
     params: str = typer.Option("params.pkl", "--params", "-p", help="Fitted params path"),
     seed: int = typer.Option(42, "--seed", help="Random seed"),
     samples: int = typer.Option(100, "--samples", "-k", help="Monte Carlo samples"),
+    drift_window: int | None = typer.Option(
+        None, "--drift-window", "-d",
+        help="Use only the last N historical timesteps for the mean-drift "
+             "baseline. Useful for regime-shifted markets (e.g. when "
+             "diagnostics flags 'recent drift diverges from historical "
+             "mean'). Try 126 (~6 months) or 252 (~1 year). "
+             "Default: full history.",
+    ),
 ):
     """Predict future prices for a NIFTY50 stock."""
     from stochax_market.predict import predict
@@ -119,7 +166,12 @@ def predict_main(
     )
 
     result = predict(
-        symbol, horizon=horizon, params_path=params, seed=seed, n_samples=samples
+        symbol,
+        horizon      = horizon,
+        params_path  = params,
+        seed         = seed,
+        n_samples    = samples,
+        drift_window = drift_window,
     )
 
     table = Table(title=f"Predictions: {symbol} ({horizon}-day horizon)")
