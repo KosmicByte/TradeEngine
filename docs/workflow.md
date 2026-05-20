@@ -91,7 +91,7 @@ Place the V1.1.0-fetcher output at `./data/{SYMBOL}.csv`:
 Required columns: `Date, Symbol, Series, Prev Close, Open, High, Low,
 Close, Volume, VWAP, Turnover, Trades, Deliverable Volume, %Deliverble`.
 Dates can be tz-aware (e.g. `2026-05-08 00:00:00+05:30`) or tz-naive ISO
-— v0.4 of the loader normalises both.
+— the loader normalises both.
 
 For the running example, the file should contain RELIANCE daily bars
 through Friday 8 May 2026 (last row date: `2026-05-08`).
@@ -170,7 +170,7 @@ cd ~/github/TradeEngine
 # (1) one-time: data/RELIANCE.csv must be in place (see Prerequisites)
 
 # (2) fit the SPDE + GARCH parameters on the full history
-stochax-fit --symbol RELIANCE --n-steps 500 --output params.pkl
+stochax-fit --symbol RELIANCE --n-steps 1000 --output params.pkl
 
 # (3) simulate 30 trading days forward
 #     → writes RELIANCE_sim.csv with (step, predicted_price)
@@ -212,14 +212,26 @@ stochax-visualize --symbol RELIANCE \
 ### What you should see at each step
 
 **Step (2) — fit.** Final terminal line should be a "✓ Calibration
-complete" with a final loss in the 1e-3 to 1e-4 range for a well-fit
-model. Hitting the 1000-step BFGS cap is flagged by diagnostics in
-step (6) — not a hard error.
+complete". The diagnostic preamble prints the GARCH unconditional vs
+realised variance ratio (should be near 1×), the loss decomposition
+with weighted shares (MSE around 30–60%, the rest split between
+directional, variance-ratio, and shift-variance), and the post-fit
+rollout diff-std ratio (target: ~0.6–0.9).
+
+Total final loss lands in the 0.3–0.5 range with the v0.5 weights —
+this is the 4-component penalised loss, not the unit-weighted bare MSE
+that prior versions used. Don't pattern-match against "loss > 0.01 =
+under-calibrated" from older docs; the headline number to watch is
+the rollout diff-std ratio and the per-component shares. See
+[`docs/calibration.md`](calibration.md) §"Diagnostic preamble and
+postamble" for what each block tells you.
+
+Hitting the 1000-step BFGS cap is flagged by `stochax-diagnose` in
+step (6) — not a hard error, but indicates the optimiser may not have
+converged.
 
 **Step (3) — simulate.** A Rich table with `Steps simulated: 30`,
-`Trajectory shape: (30, 128)`, `Output file: RELIANCE_sim.csv`. Debug
-lines show `last_price` matching the last `Close` in your data
-(₹1435.20 in this example).
+`Trajectory shape: (30, 128)`, `Output file: RELIANCE_sim.csv`.
 
 **Step (4) — predict (optional).** A Rich table with one row per
 forecast day showing Mean / 5% CI / 95% CI prices. Useful for quickly
@@ -375,7 +387,7 @@ cd ~/github/TradeEngine
 
 # (2) fit and simulate — same as Workflow A
 #     ⚠ caveat below
-stochax-fit --symbol RELIANCE --n-steps 500 --output params.pkl
+stochax-fit --symbol RELIANCE --n-steps 1000 --output params.pkl
 stochax-simulate --symbol RELIANCE --steps 30
 
 # (3) merge with EXPLICIT historical anchor
@@ -445,7 +457,7 @@ mv plots                archive/2026-05-11_to_2026-06-19/
 #     → run V1.1.0 fetcher, copy data/RELIANCE.csv
 
 # (3) re-run Workflow A end-to-end with the fresh data
-stochax-fit --symbol RELIANCE --n-steps 500 --output params.pkl
+stochax-fit --symbol RELIANCE --n-steps 1000 --output params.pkl
 stochax-simulate --symbol RELIANCE --steps 30
 stochax-merge --sim-csv RELIANCE_sim.csv --symbol RELIANCE
 stochax-diagnose --symbol RELIANCE \
@@ -592,7 +604,7 @@ realisation window to grow.
 
 ```bash
 # First-time forecast (Workflow A)
-stochax-fit --symbol RELIANCE --n-steps 500 --output params.pkl && \
+stochax-fit --symbol RELIANCE --n-steps 1000 --output params.pkl && \
 stochax-simulate --symbol RELIANCE --steps 30 && \
 stochax-merge --sim-csv RELIANCE_sim.csv --symbol RELIANCE && \
 stochax-diagnose --symbol RELIANCE --sim-csv RELIANCE_sim.csv --params params.pkl --out RELIANCE_diag.md && \

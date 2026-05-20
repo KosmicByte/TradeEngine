@@ -23,3 +23,8 @@ plots/
 # Diagnostic reports (per-run, regenerable)
 *_diag.md
 *_diagnostics.md
+# Local backtest reports (per-run output, not tracked)
+RELIANCE_*.md
+
+# Planning docs (local working notes, not part of project docs)
+docs/COMMIT_PLAN.md

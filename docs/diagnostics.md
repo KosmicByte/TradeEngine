@@ -409,10 +409,20 @@ file lacks `loss_info`.
 | 0.01–0.10 | warn   | borderline calibration                                   |
 | ≥ 0.10    | fail   | under-calibrated; rerun with more BFGS steps             |
 
-The calibration loss combines MSE + sign-mismatch + flat-vol penalty (see
-`calibration/loss.py`). For a well-fit model on daily data, this should
-land below 0.01. Persistently high loss after multiple refits points at
-loss-function imbalance or parameter bounds being too tight.
+The calibration loss combines four components: teacher-forced MSE
+(weight 1000), directional penalty (0.1), GARCH variance-ratio anchor
+(0.5), and rollout-based shift-variance penalty (0.3). See
+[`calibration.md`](calibration.md) for the per-component rationale.
+
+The final-loss thresholds above are heuristic — they pre-date the v0.5
+four-term loss and assume the older unit-weighted formulation. With the
+weights above, a healthy v0.5 fit lands around 0.3–0.5 final loss
+(MSE-weighted ≈ 0.15, var-ratio ≈ 0; shift-var ≈ 0.05–0.10; directional
+≈ 0.05). Treat the threshold here as an outlier detector rather than a
+quality indicator — for actual quality, look at the rollout diff-std
+ratio in `result_info["rollout_diff_std_ratio"]` and the per-component
+shares in the fit's postamble. The CHANGELOG documents representative
+loss values across versions.
 
 #### BFGS steps taken
 
@@ -444,10 +454,12 @@ below are worth memorising.
 | Direct. | Directional accuracy ~ 50%           | warn   |
 | Accuracy| Theil's U > 1                        | fail   |
 
-If you see this pattern, the v0.2 `predict.py` patches are likely missing
-or have been undone — `last_drift` is being broadcast across the horizon,
-or `last_sigma` is being held constant instead of iterated through the
-GARCH recursion. Re-check `_single_forecast` against the v0.2 fix.
+If you see this pattern in v0.5+, the multiplicative-form regression
+is unlikely (the SPDE itself is now advective), but `predict.py` could
+still have `last_sigma` / `last_drift` regressions in the forward
+rollout. Re-check `_single_forecast` against the v0.2 fix pattern: σ
+must be rolled forward via `lax.scan` of the GARCH recursion, and
+drift must use a (windowed) mean rather than `last_drift`.
 
 ### Drift-baseline regime mismatch
 
@@ -469,8 +481,11 @@ rolling-window drift instead of full-history mean inside `predict.py`.
 | Variance| Predicted/actual std ratio > 3.0           | fail   |
 | Calib.  | Final loss > 0.10                          | warn   |
 
-Almost always traces back to `raw_omega` initialisation. Refit with
-`raw_omega ≈ −11.0` rather than the naive `−3.0` default.
+Almost always traces back to `raw_omega` initialisation. The default
+since v0.5 is `raw_omega = −11.0` (correct for daily-scale data); if
+you see this pattern, verify that the active `GARCHVolatility` is using
+the v0.5 default. The persistence-cap (α+β ≤ 0.97, since v0.4) prevents
+the unit-root corner that earlier versions could fall into.
 
 ### Calibrated against wrong frequency
 
