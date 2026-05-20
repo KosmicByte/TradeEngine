@@ -24,8 +24,9 @@ def predict(
     seed: int = 42,
     n_samples: int = 100,
     nx: int = 128,
+    drift_window: int | None = None,
 ) -> dict[str, Any]:
-    """Forecast Close and VWAP h steps ahead with bootstrap confidence intervals.
+    """Forecast Close h steps ahead with bootstrap confidence intervals.
 
     Runs K=n_samples Monte Carlo forward simulations using jax.vmap over seeds
     to produce predicted prices with confidence intervals.
@@ -37,6 +38,12 @@ def predict(
         seed: Base random seed.
         n_samples: Number of Monte Carlo samples for confidence intervals.
         nx: Number of spatial grid points.
+        drift_window: If set, use only the last `drift_window` historical
+            timesteps to compute the mean drift used in the forecast. If
+            None (default), uses the full-history mean. A shorter window
+            (e.g. 60–126 trading days) tracks recent regime shifts; the
+            full-history mean is more stable but lags. See the regime-shift
+            note below.
 
     Returns:
         Dict with keys: mean_prediction, lower_ci, upper_ci, all_samples.
@@ -45,6 +52,15 @@ def predict(
     -----
     Two forecasting bugs were patched in this version. Their previous (buggy)
     forms are preserved in the docstring of `_single_forecast` below.
+
+    Regime-shift handling (drift_window):
+        The diagnostics module compares full-history drift against recent-60d
+        drift. When the two diverge by more than ~30% annualised, the
+        full-history mean injects a directional bias that systematically
+        over- or under-shoots the next month. For RELIANCE on 2026-05-08,
+        historical drift annualised to 15.8% but recent-60d to −2.4%,
+        producing a +3.6% bias. Passing `drift_window=126` (≈6 months)
+        damps the historical bullish prior toward the recent regime.
     """
     df = load_stock(symbol)
     features = encode_features(df, nx=nx)
@@ -72,7 +88,12 @@ def predict(
     last_u     = features["u0"][-1]
     last_sigma = sigma_series[-1]
     last_eps   = log_returns[-1]                  # last innovation; seeds the GARCH forecast
-    mean_drift = jnp.mean(features["drift"])      # long-run drift baseline
+
+    # Drift baseline: configurable window. Default → full history.
+    if drift_window is None or drift_window >= features["drift"].shape[0]:
+        mean_drift = jnp.mean(features["drift"])
+    else:
+        mean_drift = jnp.mean(features["drift"][-drift_window:])
 
     # Previously (buggy):
     #     last_drift = features["drift"][-1]
@@ -109,7 +130,7 @@ def predict(
         noisy point. Broadcasting it across the whole horizon baked that one
         tick in as a permanent directional bias, producing the flat-to-monotonic
         predicted curves observed in the April-18 RELIANCE backtest. We now
-        use the historical mean drift as the deterministic μ-component;
+        use a (windowed) mean drift as the deterministic μ-component;
         directional uncertainty is carried by the noise + volatility terms,
         which is where it belongs in this SPDE.
         """
@@ -139,7 +160,7 @@ def predict(
             GARCHVolatility.to_spatial_field, in_axes=(0, None)
         )(sigma_path, nx)
 
-        # ── 2. Drift: long-run mean (deterministic μ component) ───────────
+        # ── 2. Drift: mean over the chosen window (deterministic μ component) ─
         drift = jnp.full(horizon, mean_drift)
 
         # ── 3. Spatial Q-Wiener noise (unchanged) ─────────────────────────
