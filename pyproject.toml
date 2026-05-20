@@ -1,6 +1,6 @@
 [project]
 name = "stochax-market"
-version = "0.4.0"
+version = "0.5.0"
 description = "Stochastic PDE-based stock market simulation, calibration, and prediction using JAX."
 readme = "README.md"
 requires-python = ">=3.11"
