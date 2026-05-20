@@ -7,6 +7,26 @@ import jax
 import jax.numpy as jnp
 
 
+# Persistence cap. Constrains α + β ≤ this value via the β-property's
+# jnp.minimum clip. Empirical equity GARCH(1,1) fits typically have
+# persistence in [0.94, 0.99] with vol half-lives of 12–70 days. Setting
+# the cap at 0.97 (half-life ≈ 23 days) gives BFGS enough room to find
+# realistic persistence values without allowing the unit-root corner
+# that v0.6/v0.7 exposed: when the rollout shift-variance penalty in
+# fit.py creates pressure toward bursty volatility, BFGS would drive
+# persistence to the stationarity boundary (0.999) and shrink ω to keep
+# unconditional variance anchored — producing models with 693-day vol
+# half-lives and runaway long-horizon forecasts (RELIANCE v0.7 backtest:
+# α at 0.20, β at the 0.999-α boundary, α+β = 0.999).
+#
+# 0.97 is the empirically-reasonable upper bound for daily equity GARCH;
+# values much higher than this are pathological for this model not because
+# of GARCH theory (which permits up to 1) but because the SPDE rollout
+# integrates GARCH σ_t multiplicatively over many days, and near-unit-root
+# σ_t trajectories produce unrealistic burst-then-stay-high behaviour.
+_PERSISTENCE_CAP: float = 0.97
+
+
 class GARCHVolatility(eqx.Module):
     """GARCH(1,1) stochastic volatility model.
 
@@ -17,10 +37,12 @@ class GARCHVolatility(eqx.Module):
       omega = softplus(raw_omega)                         → ω > 0
       alpha = 0.05 + 0.15 * sigmoid(raw_alpha)           → α ∈ [0.05, 0.20]
       beta  = clip(0.50 + 0.40 * sigmoid(raw_beta),
-                   max=0.999 - alpha)                     → β ∈ [0.50, 0.90]
+                   max = _PERSISTENCE_CAP - alpha)        → β ∈ [0.50, 0.90]
 
-    This guarantees alpha + beta < 1 (covariance-stationarity) while
-    preventing degenerate near-zero ARCH/GARCH coefficients.
+    This guarantees α + β ≤ _PERSISTENCE_CAP (0.97) — well below the
+    stationarity boundary of 1, but tight enough to prevent the
+    unit-root pathologies exposed by the v0.6/v0.7 RELIANCE fits where
+    BFGS pushed α+β → 0.999 to exploit the rollout shift-variance penalty.
 
     Attributes:
         raw_omega: Unconstrained parameter for ω.
@@ -34,7 +56,7 @@ class GARCHVolatility(eqx.Module):
 
     def __init__(
         self,
-        raw_omega: float = -3.0,
+        raw_omega: float = -11.0,
         raw_alpha: float = 0.5,
         raw_beta: float = 2.0,
     ):
@@ -44,11 +66,14 @@ class GARCHVolatility(eqx.Module):
         omega = softplus(raw_omega),
         alpha = 0.05 + 0.15 * sigmoid(raw_alpha)  → alpha in [0.05, 0.20],
         beta  = 0.50 + 0.40 * sigmoid(raw_beta)   → beta  in [0.50, 0.90],
-        with beta additionally clipped to keep alpha + beta < 1.
+        with beta additionally clipped to keep α + β ≤ _PERSISTENCE_CAP.
 
-        The default initialisation (raw_omega=-3, raw_alpha=0.5, raw_beta=2)
-        gives omega≈0.049, alpha≈0.12, beta≈0.85, which is a sensible
-        GARCH(1,1) starting point with strong volatility persistence.
+        The default initialisation (raw_omega=-11, raw_alpha=0.5, raw_beta=2)
+        gives:
+            omega ≈ 1.67e-5,  alpha ≈ 0.125,  beta ≈ clipped to 0.845
+            persistence       α + β = 0.97 (at the cap; BFGS will explore
+                              the [0.55, 0.97] range)
+            unconditional σ²  ≈ ω / (1 − α − β) → set by ω given persistence
 
         Args:
             raw_omega: Unconstrained parameter for ω (stored directly).
@@ -71,7 +96,7 @@ class GARCHVolatility(eqx.Module):
     def beta(self) -> jnp.ndarray:
         alpha = 0.05 + 0.15 * jax.nn.sigmoid(self.raw_alpha)
         beta_unconstrained = 0.50 + 0.40 * jax.nn.sigmoid(self.raw_beta)
-        return jnp.minimum(beta_unconstrained, 0.999 - alpha)
+        return jnp.minimum(beta_unconstrained, _PERSISTENCE_CAP - alpha)
 
     def __call__(self, log_returns: jnp.ndarray) -> jnp.ndarray:
         """Compute GARCH(1,1) conditional volatility series.
@@ -106,30 +131,18 @@ class GARCHVolatility(eqx.Module):
         """Broadcast scalar σ_t to a spatial field of shape (nx,).
 
         Uses a half-period sinusoidal modulation for non-trivial spatial
-        structure with guaranteed non-zero amplitude.
-
-        The raw sigma_t is in daily log-return units (~0.01–0.05). The SPDE
-        field u has values O(1/nx) from make_initial_condition (unit-integral
-        Gaussian). The noise term in step() is:
-            sigma_field * u * noise_increment
-            ~ sigma_t * (1/nx) * empirical_sigma * sqrt(dt)
-            ~ 0.02 * 0.008 * 0.001 = 1.6e-7  ← invisible without rescaling
-
-        Multiplying sigma_t by nx lifts sigma_field to O(1), making the noise
-        term commensurate with the field values:
-            sigma_field * u * noise_increment
-            ~ (sigma_t * nx) * (1/nx) * empirical_sigma * sqrt(dt)
-            ~ sigma_t * empirical_sigma * sqrt(dt)  ← correct daily increment
+        structure with guaranteed non-zero amplitude. The base nx multiplier
+        is preserved from the multiplicative-noise era; the advective SPDE
+        in spde.py (v0.4+) compensates via a learnable ``sigma_scale``
+        parameter so this scalar's exact value is not critical.
 
         Args:
             sigma_t: Scalar volatility value (daily log-return scale).
             nx: Number of spatial grid points.
 
         Returns:
-            Shape (nx,) spatial volatility field scaled to field magnitude.
+            Shape (nx,) spatial volatility field.
         """
-        # Multiply by nx to counteract the 1/nx magnitude of the field u,
-        # so the effective noise amplitude is O(sigma_t) not O(sigma_t/nx).
         return sigma_t * nx * (
             1.0 + 0.1 * jnp.sin(jnp.linspace(0, jnp.pi, nx, dtype=jnp.float32))
         )
